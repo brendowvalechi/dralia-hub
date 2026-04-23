@@ -1,21 +1,32 @@
-version: "3.9"
-
 services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - media_data:/app/media
     env_file:
       - .env
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
-      - db
+      - postgres
       - redis
 
-  db:
-    image: postgres:15
+  postgres:
+    image: postgres:16
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -30,5 +41,43 @@ services:
     ports:
       - "6379:6379"
 
+  worker:
+    build: ./backend
+    volumes:
+      - ./backend:/app
+      - media_data:/app/media
+    env_file:
+      - .env
+    command: celery -A app.celery_app worker --pool=solo -l info
+    depends_on:
+      - postgres
+      - redis
+
+  evolution-api:
+    image: atendai/evolution-api:latest
+    ports:
+      - "8080:8080"
+    environment:
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY}
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: redis://redis:6379/6
+      CACHE_REDIS_PREFIX_KEY: evolution
+      CACHE_REDIS_SAVE_INSTANCES: "false"
+      CACHE_LOCAL_ENABLED: "false"
+      SWAGGER_ENABLED: "true"
+      # ATENCAO: O WhatsApp bloqueia versoes antigas do cliente e retorna erro 405.
+      # Se o QR code parar de aparecer, atualize a versao abaixo com o comando:
+      # docker exec dralia-hub-evolution-api-1 node -e "const {fetchLatestBaileysVersion}=require('/evolution/node_modules/baileys');fetchLatestBaileysVersion().then(v=>console.log(v.version.join('.')))"
+      CONFIG_SESSION_PHONE_VERSION: 2.3000.1035194821
+      WEBHOOK_GLOBAL_URL: http://backend:8000/webhooks/evolution
+      WEBHOOK_GLOBAL_ENABLED: "true"
+      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
+    depends_on:
+      - postgres
+      - redis
+
 volumes:
   pgdata:
+  media_data:
