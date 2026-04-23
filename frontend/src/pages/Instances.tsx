@@ -66,7 +66,15 @@ export default function Instances() {
       setForm({ display_name: '', evolution_instance_name: '', daily_limit: 50 })
       toast('Instância criada com sucesso', 'success')
     },
-    onError: (e: any) => setFormError(e.response?.data?.detail ?? 'Erro ao criar instância'),
+    onError: (e: any) => {
+      const detail = e.response?.data?.detail
+      if (Array.isArray(detail)) {
+        const msgs = detail.map((d: any) => d.msg ?? String(d)).join('; ')
+        setFormError(msgs)
+      } else {
+        setFormError(detail ?? 'Erro ao criar instância')
+      }
+    },
   })
 
   return (
@@ -108,7 +116,14 @@ export default function Instances() {
           </div>
           {formError && <p className="text-red-500 text-sm">{formError}</p>}
           <div className="flex gap-2">
-            <button onClick={() => create.mutate(form)} disabled={create.isPending}
+            <button onClick={() => {
+              if (!/^[a-zA-Z0-9_-]+$/.test(form.evolution_instance_name)) {
+                setFormError('Nome na Evolution API: use apenas letras, números, _ e -')
+                return
+              }
+              setFormError('')
+              create.mutate(form)
+            }} disabled={create.isPending}
               className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-500 disabled:opacity-50">
               {create.isPending ? 'Criando...' : 'Criar'}
             </button>
