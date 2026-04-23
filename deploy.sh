@@ -47,6 +47,9 @@ sleep 15
 echo "[6/6] Aplicando migrações do banco..."
 docker compose exec -T backend alembic upgrade head
 
+echo "[+] Reiniciando nginx para reconectar aos novos containers..."
+docker compose restart nginx
+
 echo ""
 echo "======================================================"
 echo "  DEPLOY CONCLUÍDO!"
