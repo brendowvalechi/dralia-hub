@@ -11,6 +11,20 @@ from app.config import settings
 _TIMEOUT = 20.0
 
 
+def _normalize_phone(phone: str) -> str:
+    """
+    Normaliza número para formato Evolution API (E.164 sem +).
+    Números brasileiros sem o DDI 55 recebem o prefixo automaticamente.
+    Ex: +34992351932 → 5534992351932 | +5511999999999 → 5511999999999
+    """
+    number = phone.lstrip("+").strip()
+    if number.startswith("55") and len(number) >= 12:
+        return number
+    if len(number) <= 11:
+        return "55" + number
+    return number
+
+
 def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=settings.EVOLUTION_API_URL,
@@ -86,7 +100,7 @@ async def send_text(instance_name: str, phone: str, text: str) -> dict:
     Envia mensagem de texto simples.
     phone: número no formato E.164 sem o '+' (ex: 5511999999999)
     """
-    number = phone.lstrip("+")
+    number = _normalize_phone(phone)
     async with _client() as c:
         r = await c.post(
             f"/message/sendText/{instance_name}",
@@ -107,7 +121,7 @@ async def send_media(
     Envia mídia (image/video/audio/document).
     media_type: 'image' | 'video' | 'audio' | 'document'
     """
-    number = phone.lstrip("+")
+    number = _normalize_phone(phone)
     async with _client() as c:
         r = await c.post(
             f"/message/sendMedia/{instance_name}",
@@ -137,7 +151,7 @@ async def send_audio_ptt(
     audio_url: URL acessível pelo container da Evolution API
                (ex: http://backend:8000/media/arquivo.mp3)
     """
-    number = phone.lstrip("+")
+    number = _normalize_phone(phone)
     async with _client() as c:
         r = await c.post(
             f"/message/sendWhatsAppAudio/{instance_name}",
@@ -149,7 +163,7 @@ async def send_audio_ptt(
 
 async def send_typing(instance_name: str, phone: str, duration_ms: int = 2000) -> None:
     """Simula 'digitando…' por duration_ms milissegundos (anti-ban)."""
-    number = phone.lstrip("+")
+    number = _normalize_phone(phone)
     async with _client() as c:
         r = await c.post(
             f"/chat/sendPresence/{instance_name}",
@@ -160,7 +174,7 @@ async def send_typing(instance_name: str, phone: str, duration_ms: int = 2000) -
 
 async def send_recording(instance_name: str, phone: str, duration_ms: int = 3000) -> None:
     """Simula 'gravando áudio…' por duration_ms milissegundos (anti-ban para PTT)."""
-    number = phone.lstrip("+")
+    number = _normalize_phone(phone)
     async with _client() as c:
         r = await c.post(
             f"/chat/sendPresence/{instance_name}",
