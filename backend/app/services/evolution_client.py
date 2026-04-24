@@ -167,7 +167,7 @@ async def send_typing(instance_name: str, phone: str, duration_ms: int = 2000) -
     async with _client() as c:
         r = await c.post(
             f"/chat/sendPresence/{instance_name}",
-            json={"number": number, "options": {"presence": "composing", "delay": duration_ms}},
+            json={"number": number, "presence": "composing", "delay": duration_ms},
         )
         _ = r
 
@@ -178,6 +178,6 @@ async def send_recording(instance_name: str, phone: str, duration_ms: int = 3000
     async with _client() as c:
         r = await c.post(
             f"/chat/sendPresence/{instance_name}",
-            json={"number": number, "options": {"presence": "recording", "delay": duration_ms}},
+            json={"number": number, "presence": "recording", "delay": duration_ms},
         )
         _ = r
