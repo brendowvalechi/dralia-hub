@@ -16,6 +16,7 @@ celery_app.conf.update(
     timezone="America/Sao_Paulo",
     enable_utc=True,
     task_track_started=True,
+    task_default_queue="default",
     worker_prefetch_multiplier=1,      # um job por vez por worker
     task_acks_late=True,               # só confirma após conclusão
     broker_connection_retry_on_startup=False,
