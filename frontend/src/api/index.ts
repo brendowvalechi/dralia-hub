@@ -23,6 +23,8 @@ export const updateLead = (id: string, data: Partial<Lead>) =>
 
 export const deleteLead = (id: string) => api.delete(`/leads/${id}`)
 
+export const deleteAllLeads = () => api.delete<{ deleted: number }>('/leads')
+
 export const importLeads = (file: File, updateExisting = false, group?: string) => {
   const form = new FormData()
   form.append('file', file)

@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getLeads, deleteLead, updateLead, importLeads, getLeadLastMessage } from '../api'
+import { getLeads, deleteLead, deleteAllLeads, updateLead, importLeads, getLeadLastMessage } from '../api'
 import { Upload, Trash2, Ban, Search, Pencil, Check, X, ChevronRight, MessageSquare } from 'lucide-react'
 import type { Lead } from '../types'
 
@@ -233,6 +233,14 @@ export default function Leads() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['leads'] }),
   })
 
+  const delAll = useMutation({
+    mutationFn: deleteAllLeads,
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['leads'] })
+      setImportMsg(`${res.data.deleted} leads excluídos.`)
+    },
+  })
+
   const optOut = useMutation({
     mutationFn: (id: string) => updateLead(id, { status: 'opted_out' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['leads'] }),
@@ -252,8 +260,9 @@ export default function Leads() {
       const { data } = await importLeads(file, updateExisting, group || undefined)
       setImportMsg(`Importados: ${data.created} criados, ${data.updated} atualizados, ${data.skipped} ignorados.`)
       qc.invalidateQueries({ queryKey: ['leads'] })
-    } catch {
-      setImportMsg('Erro ao importar arquivo.')
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail
+      setImportMsg(`Erro ao importar: ${typeof detail === 'string' ? detail : 'arquivo inválido.'}`)
     }
   }
 
@@ -261,12 +270,25 @@ export default function Leads() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-800">Leads</h1>
-        <button
-          onClick={() => setShowImport(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
-        >
-          <Upload size={14} /> Importar CSV/XLSX
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              if (confirm(`Excluir TODOS os leads? Esta ação não pode ser desfeita.`)) {
+                delAll.mutate()
+              }
+            }}
+            disabled={delAll.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white border border-red-200 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50"
+          >
+            <Trash2 size={14} /> Excluir todos
+          </button>
+          <button
+            onClick={() => setShowImport(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white border border-gray-200 rounded-lg hover:bg-gray-50"
+          >
+            <Upload size={14} /> Importar CSV/XLSX
+          </button>
+        </div>
       </div>
 
       {importMsg && (

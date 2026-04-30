@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getInstances, syncInstance, logoutInstance, createInstance, deleteInstance } from '../api'
-import { RefreshCw, LogOut, Trash2, Plus, Wifi, WifiOff, QrCode } from 'lucide-react'
+import { getInstances, syncInstance, logoutInstance, createInstance, deleteInstance, updateInstance } from '../api'
+import { RefreshCw, LogOut, Trash2, Plus, Wifi, WifiOff, QrCode, Pencil, Check, X } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext'
 import QRCodeModal from '../components/QRCodeModal'
 import type { Instance } from '../types'
@@ -33,6 +33,8 @@ export default function Instances() {
   const [form, setForm] = useState({ display_name: '', evolution_instance_name: '', daily_limit: 50 })
   const [formError, setFormError] = useState('')
   const [qrModal, setQrModal] = useState<{ id: string; name: string } | null>(null)
+  const [editingLimitId, setEditingLimitId] = useState<string | null>(null)
+  const [editLimitValue, setEditLimitValue] = useState(50)
 
   const { data: instances = [], isLoading } = useQuery({
     queryKey: ['instances'],
@@ -56,6 +58,17 @@ export default function Instances() {
     mutationFn: deleteInstance,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['instances'] }); toast('Instância excluída', 'info') },
     onError: () => toast('Erro ao excluir', 'error'),
+  })
+
+  const updateLimit = useMutation({
+    mutationFn: ({ id, daily_limit }: { id: string; daily_limit: number }) =>
+      updateInstance(id, { daily_limit }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['instances'] })
+      setEditingLimitId(null)
+      toast('Limite atualizado', 'success')
+    },
+    onError: () => toast('Erro ao atualizar limite', 'error'),
   })
 
   const create = useMutation({
@@ -178,7 +191,45 @@ export default function Instances() {
                 </div>
                 <div>
                   <p className="text-xs text-gray-400 mb-1">Envios hoje</p>
-                  <p className="font-medium text-gray-700">{inst.daily_sent} / {inst.daily_limit}</p>
+                  {editingLimitId === inst.id ? (
+                    <div className="flex items-center gap-1">
+                      <span className="text-gray-700">{inst.daily_sent} /</span>
+                      <input
+                        type="number"
+                        value={editLimitValue}
+                        onChange={e => setEditLimitValue(Number(e.target.value))}
+                        min={1}
+                        max={1000}
+                        className="w-20 border border-indigo-300 rounded px-1.5 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                      <button
+                        onClick={() => updateLimit.mutate({ id: inst.id, daily_limit: editLimitValue })}
+                        disabled={updateLimit.isPending}
+                        className="p-0.5 text-green-600 hover:text-green-800 disabled:opacity-50"
+                        title="Salvar"
+                      >
+                        <Check size={13} />
+                      </button>
+                      <button
+                        onClick={() => setEditingLimitId(null)}
+                        className="p-0.5 text-gray-400 hover:text-gray-600"
+                        title="Cancelar"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-medium text-gray-700">{inst.daily_sent} / {inst.daily_limit}</p>
+                      <button
+                        onClick={() => { setEditingLimitId(inst.id); setEditLimitValue(inst.daily_limit) }}
+                        className="p-0.5 text-gray-300 hover:text-indigo-600"
+                        title="Editar limite"
+                      >
+                        <Pencil size={11} />
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div>
                   <p className="text-xs text-gray-400 mb-1">Saúde</p>

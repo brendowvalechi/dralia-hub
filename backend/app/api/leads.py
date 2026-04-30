@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, select, text
+from sqlalchemy import delete as sql_delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_operator
@@ -145,6 +145,19 @@ async def update_lead(
 
 
 # ---------------------------------------------------------------------------
+# DELETE ALL — exclui todos os leads
+# ---------------------------------------------------------------------------
+@router.delete("", status_code=status.HTTP_200_OK)
+async def delete_all_leads(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_operator),
+):
+    result = await db.execute(sql_delete(Lead))
+    await db.commit()
+    return {"deleted": result.rowcount}
+
+
+# ---------------------------------------------------------------------------
 # DELETE (LGPD — exclusão de dados)
 # ---------------------------------------------------------------------------
 @router.delete("/{lead_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -241,7 +254,8 @@ async def import_leads(
         if filename.endswith(".xlsx") or filename.endswith(".xls"):
             df = pd.read_excel(io.BytesIO(content), dtype=str)
         else:
-            df = pd.read_csv(io.StringIO(content.decode("utf-8", errors="replace")), dtype=str)
+            # utf-8-sig strips BOM presente em CSVs gerados pelo Excel
+            df = pd.read_csv(io.StringIO(content.decode("utf-8-sig", errors="replace")), dtype=str)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Erro ao ler arquivo: {exc}")
 
