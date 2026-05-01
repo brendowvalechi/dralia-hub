@@ -12,8 +12,11 @@ from datetime import datetime, timedelta, timezone
 from celery.utils.log import get_task_logger
 from sqlalchemy import func, select, update
 
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.pool import NullPool
+
 from app.celery_app import celery_app
-from app.database import SessionLocal
+from app.config import settings
 from app.models.instance import Instance, InstanceStatus
 from app.models.lead import Lead, LeadStatus
 from app.models.message import Message, MessageStatus
@@ -23,11 +26,17 @@ from app.services import warmup_manager
 logger = get_task_logger(__name__)
 
 
+def _worker_session() -> async_sessionmaker:
+    url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+    engine = create_async_engine(url, poolclass=NullPool)
+    return async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # reset_daily_sent — meia-noite BRT
 # ─────────────────────────────────────────────────────────────────────────────
 async def _reset_daily_sent_async() -> int:
-    async with SessionLocal() as db:
+    async with _worker_session()() as db:
         result = await db.execute(update(Instance).values(daily_sent=0))
         await db.commit()
         return result.rowcount
@@ -43,7 +52,7 @@ def reset_daily_sent() -> None:
 # advance_warmup — avança o dia de warm-up e ajusta daily_limit
 # ─────────────────────────────────────────────────────────────────────────────
 async def _advance_warmup_async() -> None:
-    async with SessionLocal() as db:
+    async with _worker_session()() as db:
         result = await db.execute(
             select(Instance).where(
                 Instance.warmup_day.isnot(None),
@@ -74,7 +83,7 @@ def advance_warmup() -> None:
 # update_health_scores — recalcula health_score com base nos envios do dia
 # ─────────────────────────────────────────────────────────────────────────────
 async def _update_health_scores_async() -> None:
-    async with SessionLocal() as db:
+    async with _worker_session()() as db:
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
         result = await db.execute(select(Instance))
@@ -120,7 +129,7 @@ def update_health_scores() -> None:
 async def _refresh_segment_counts_async() -> None:
     from app.models.lead import LeadStatus
 
-    async with SessionLocal() as db:
+    async with _worker_session()() as db:
         segments = (await db.execute(select(Segment))).scalars().all()
 
         for seg in segments:

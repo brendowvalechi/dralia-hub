@@ -15,9 +15,11 @@ import uuid
 from datetime import datetime, timezone
 
 from celery.utils.log import get_task_logger
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.celery_app import celery_app
-from app.database import SessionLocal
+from app.config import settings
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.instance import Instance, InstanceStatus
 from app.models.lead import Lead, LeadStatus
@@ -28,6 +30,19 @@ from app.services.instance_router import pick_instance
 from sqlalchemy import select, update, exists
 
 logger = get_task_logger(__name__)
+
+
+def _make_worker_session() -> async_sessionmaker:
+    """Cria engine com NullPool para uso em asyncio.run() do Celery.
+
+    asyncpg é ligado ao event loop em que a conexão foi criada.
+    asyncio.run() cria um novo event loop a cada chamada, então o pool
+    compartilhado do engine principal causaria InterfaceError. NullPool
+    cria uma conexão nova por session e não mantém estado entre loops.
+    """
+    url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+    engine = create_async_engine(url, poolclass=NullPool)
+    return async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
 
 async def _pick_instance(db) -> Instance | None:
@@ -47,7 +62,7 @@ async def _pick_instance(db) -> Instance | None:
 async def _run_campaign_async(campaign_id: str) -> None:
     cid = uuid.UUID(campaign_id)
 
-    async with SessionLocal() as db:
+    async with _make_worker_session()() as db:
         camp = await db.get(Campaign, cid)
         if not camp or camp.status != CampaignStatus.running:
             return
