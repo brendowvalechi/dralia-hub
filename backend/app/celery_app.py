@@ -42,5 +42,10 @@ celery_app.conf.update(
             "task": "scheduled.refresh_segment_counts",
             "schedule": crontab(minute=0),
         },
+        # Verifica campanhas agendadas e as lança no horário (a cada minuto)
+        "launch-scheduled-campaigns": {
+            "task": "scheduled.launch_scheduled_campaigns",
+            "schedule": crontab(minute="*"),
+        },
     },
 )

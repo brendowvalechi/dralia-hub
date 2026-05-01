@@ -17,6 +17,7 @@ from sqlalchemy.pool import NullPool
 
 from app.celery_app import celery_app
 from app.config import settings
+from app.models.campaign import Campaign, CampaignStatus
 from app.models.instance import Instance, InstanceStatus
 from app.models.lead import Lead, LeadStatus
 from app.models.message import Message, MessageStatus
@@ -155,3 +156,37 @@ async def _refresh_segment_counts_async() -> None:
 @celery_app.task(name="scheduled.refresh_segment_counts")
 def refresh_segment_counts() -> None:
     asyncio.run(_refresh_segment_counts_async())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# launch_scheduled_campaigns — verifica campanhas agendadas e as lança no horário
+# ─────────────────────────────────────────────────────────────────────────────
+async def _launch_scheduled_campaigns_async() -> None:
+    now = datetime.now(timezone.utc)
+
+    async with _worker_session()() as db:
+        result = await db.execute(
+            select(Campaign).where(
+                Campaign.status == CampaignStatus.scheduled,
+                Campaign.scheduled_at <= now,
+            )
+        )
+        due = result.scalars().all()
+
+        for camp in due:
+            camp.status = CampaignStatus.running
+            camp.started_at = now
+            camp.updated_at = now
+            logger.info(f"Lançando campanha agendada: {camp.name} ({camp.id})")
+
+        await db.commit()
+
+    # Envia tasks ao worker fora da sessão (após commit)
+    for camp in due:
+        from app.tasks.campaign_worker import run_campaign
+        run_campaign.delay(str(camp.id))
+
+
+@celery_app.task(name="scheduled.launch_scheduled_campaigns")
+def launch_scheduled_campaigns() -> None:
+    asyncio.run(_launch_scheduled_campaigns_async())
