@@ -35,6 +35,7 @@ async def pick_instance(
         .where(
             Instance.status == InstanceStatus.connected,
             Instance.daily_sent < Instance.daily_limit,
+            Instance.health_score > 0,  # não usa instâncias com saúde zerada
         )
     )
     if allowed_names:
@@ -49,8 +50,8 @@ async def pick_instance(
     if len(candidates) == 1:
         return candidates[0]
 
-    # Pesos = health_score (mínimo 1 para não excluir score=0)
-    weights = [max(1, c.health_score) for c in candidates]
+    # Pesos proporcionais ao health_score
+    weights = [c.health_score for c in candidates]
 
     # Bônus DDD: se o lead tem o mesmo DDD que a instância
     if lead_phone:

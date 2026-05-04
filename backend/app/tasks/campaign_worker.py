@@ -27,7 +27,7 @@ from app.models.message import Message, MessageStatus
 from app.services import antiban_engine, evolution_client, spintax_engine
 from app.services.instance_router import pick_instance
 
-from sqlalchemy import select, update, exists
+from sqlalchemy import select, text, update, exists
 
 logger = get_task_logger(__name__)
 
@@ -63,6 +63,15 @@ async def _run_campaign_async(campaign_id: str) -> None:
     cid = uuid.UUID(campaign_id)
 
     async with _make_worker_session()() as db:
+        # Lock de sessão PostgreSQL: garante que apenas um worker execute esta campanha.
+        # pg_try_advisory_lock retorna false se outro worker já adquiriu o lock.
+        # O lock é liberado automaticamente quando a conexão fecha.
+        lock_key = cid.int % (2**31)
+        has_lock = (await db.execute(text(f"SELECT pg_try_advisory_lock({lock_key})"))).scalar()
+        if not has_lock:
+            logger.warning(f"Campanha {cid}: outro worker já está em execução. Abortando duplicata.")
+            return
+
         camp = await db.get(Campaign, cid)
         if not camp or camp.status != CampaignStatus.running:
             return
