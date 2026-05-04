@@ -12,7 +12,7 @@ Fluxo por lead:
 """
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from celery.utils.log import get_task_logger
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -76,9 +76,29 @@ async def _run_campaign_async(campaign_id: str) -> None:
         if not camp or camp.status != CampaignStatus.running:
             return
 
-        # Carrega apenas leads que AINDA NÃO receberam mensagem nesta campanha
-        # (exclui leads com mensagem em status sent/delivered/read/sending)
-        # Isso garante que pausar+retomar não reenvie mensagens já processadas.
+        # Resolve mensagens travadas em 'sending' há mais de 10 min (worker anterior crashou
+        # entre o commit de 'sending' e o de 'sent'/'failed'). Sem essa limpeza o lead ficaria
+        # bloqueado para sempre, pois 'sending' está na lista de exclusão da subquery abaixo.
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+        stale_fixed = (await db.execute(
+            update(Message)
+            .where(
+                Message.campaign_id == cid,
+                Message.status == MessageStatus.sending,
+                Message.created_at < stale_cutoff,
+            )
+            .values(
+                status=MessageStatus.failed,
+                failure_reason="Timeout: worker reiniciado antes de confirmar envio",
+            )
+        )).rowcount
+        if stale_fixed:
+            logger.warning(f"Campanha {cid}: {stale_fixed} mensagens travadas em 'sending' marcadas como falha.")
+        await db.commit()
+
+        # Subquery de exclusão inicial: leads que já têm mensagem processada com sucesso
+        # ou ainda em andamento. Funciona como pré-filtro rápido; a verificação definitiva
+        # ocorre por lead dentro do loop (ver adiante).
         already_sent_subq = (
             select(Message.lead_id)
             .where(
@@ -116,6 +136,27 @@ async def _run_campaign_async(campaign_id: str) -> None:
 
             # Aguarda horário comercial
             await antiban_engine.wait_for_business_hours()
+
+            # Verificação definitiva por lead: consulta o banco no momento do processamento
+            # para cobrir race conditions entre workers e retomadas de campanha.
+            # A subquery inicial é um pré-filtro; este SELECT é a garantia real.
+            already = (await db.execute(
+                select(Message.id)
+                .where(
+                    Message.campaign_id == cid,
+                    Message.lead_id == lead.id,
+                    Message.status.in_([
+                        MessageStatus.sent,
+                        MessageStatus.delivered,
+                        MessageStatus.read,
+                        MessageStatus.sending,
+                    ]),
+                )
+                .limit(1)
+            )).scalar_one_or_none()
+            if already:
+                logger.warning(f"Lead {lead.id} ({lead.phone}) já processado — pulando duplicata.")
+                continue
 
             # Escolhe instância (round-robin ponderado por health_score + afinidade DDD)
             instance = await pick_instance(
