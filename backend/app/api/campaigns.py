@@ -30,6 +30,7 @@ from app.schemas.campaign import (
     CampaignListResponse,
     CampaignResponse,
     CampaignUpdate,
+    ResumeRequest,
 )
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -237,11 +238,12 @@ async def pause_campaign(
 
 
 # ---------------------------------------------------------------------------
-# RESUME
+# RESUME — aceita troca de instância(s) ao retomar
 # ---------------------------------------------------------------------------
 @router.post("/{campaign_id}/resume", response_model=CampaignResponse)
 async def resume_campaign(
     campaign_id: uuid.UUID,
+    body: ResumeRequest = ResumeRequest(),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_operator),
 ):
@@ -250,6 +252,11 @@ async def resume_campaign(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campanha não encontrada")
     if camp.status != CampaignStatus.paused:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Campanha não está pausada")
+
+    # Atualiza instâncias se o usuário especificou uma preferência
+    # None = mantém as existentes; [] = remove restrição; ["x"] = restringe a x
+    if body.allowed_instances is not None:
+        camp.allowed_instances = body.allowed_instances if body.allowed_instances else None
 
     camp.status = CampaignStatus.running
     camp.updated_at = datetime.now(timezone.utc)

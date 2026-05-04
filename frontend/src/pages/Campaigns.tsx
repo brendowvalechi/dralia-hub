@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getCampaigns, createCampaign, deleteCampaign, launchCampaign, pauseCampaign, resumeCampaign, updateCampaign, uploadMedia, getInstances, getCampaignDeliveryReport, getLeadTags } from '../api'
-import { Plus, Play, Pause, RotateCcw, Trash2, ChevronRight, Pencil, Check, X, Mic, Upload, Clock, BarChart2, Users, Cpu } from 'lucide-react'
-import type { Campaign, DeliveryReport } from '../types'
+import { Plus, Play, Pause, RotateCcw, Trash2, ChevronRight, Pencil, Check, X, Mic, Upload, Clock, BarChart2, Users, Cpu, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
+import type { Campaign, DeliveryReport, Instance } from '../types'
 
 const STATUS_BADGE: Record<string, string> = {
   draft: 'bg-gray-100 text-gray-500',
@@ -150,13 +150,66 @@ const STATUS_COLOR: Record<string, string> = {
   sending: 'text-yellow-500',
 }
 
+function FailureAnalysis({ messages }: { messages: DeliveryReport['messages'] }) {
+  const [open, setOpen] = useState(true)
+  const failed = messages.filter(m => m.status === 'failed')
+  if (failed.length === 0) return null
+
+  const grouped: Record<string, number> = {}
+  for (const m of failed) {
+    const key = m.failure_reason?.trim() || 'Motivo desconhecido'
+    grouped[key] = (grouped[key] ?? 0) + 1
+  }
+  const sorted = Object.entries(grouped).sort((a, b) => b[1] - a[1])
+  const max = sorted[0]?.[1] ?? 1
+
+  return (
+    <div className="border border-red-100 rounded-xl mx-6 mb-3">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-red-700 hover:bg-red-50 rounded-xl"
+      >
+        <span className="flex items-center gap-2">
+          <AlertTriangle size={14} className="text-red-500" />
+          Análise de falhas — {failed.length} mensagem{failed.length !== 1 ? 's' : ''} não entregue{failed.length !== 1 ? 's' : ''}
+        </span>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+      {open && (
+        <div className="px-4 pb-3 space-y-2">
+          <p className="text-xs text-gray-400 mb-2">Causas agrupadas por frequência:</p>
+          {sorted.map(([reason, count]) => (
+            <div key={reason}>
+              <div className="flex items-center justify-between text-xs mb-0.5">
+                <span className="text-gray-700 truncate flex-1 mr-2" title={reason}>{reason}</span>
+                <span className="text-red-600 font-medium flex-shrink-0">{count}×</span>
+              </div>
+              <div className="bg-gray-100 rounded-full h-1.5">
+                <div
+                  className="h-1.5 rounded-full bg-red-400"
+                  style={{ width: `${(count / max) * 100}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DeliveryReportModal({ campaignId, onClose }: { campaignId: string; onClose: () => void }) {
+  const [tab, setTab] = useState<'all' | 'failed'>('all')
+
   const { data, isLoading } = useQuery({
     queryKey: ['delivery-report', campaignId],
     queryFn: () => getCampaignDeliveryReport(campaignId).then(r => r.data),
   })
 
   const report = data as DeliveryReport | undefined
+  const visibleMessages = tab === 'failed'
+    ? (report?.messages ?? []).filter(m => m.status === 'failed')
+    : (report?.messages ?? [])
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -188,15 +241,39 @@ function DeliveryReportModal({ campaignId, onClose }: { campaignId: string; onCl
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-3">
-              <p className="text-xs text-gray-400 mb-2 font-medium">{report.messages.length} mensagens</p>
+            {/* Failure analysis section */}
+            <div className="pt-3">
+              <FailureAnalysis messages={report.messages} />
+            </div>
+
+            {/* Tab selector */}
+            <div className="px-6 flex gap-2 mb-1">
+              <button
+                onClick={() => setTab('all')}
+                className={`px-3 py-1 text-xs rounded-full font-medium transition-colors ${tab === 'all' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+              >
+                Todas ({report.messages.length})
+              </button>
+              {(report.summary['failed'] ?? 0) > 0 && (
+                <button
+                  onClick={() => setTab('failed')}
+                  className={`px-3 py-1 text-xs rounded-full font-medium transition-colors ${tab === 'failed' ? 'bg-red-600 text-white' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}
+                >
+                  Só falhas ({report.summary['failed']})
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-2">
               <div className="space-y-1.5">
-                {report.messages.map(m => (
+                {visibleMessages.map(m => (
                   <div key={m.message_id} className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-50">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-gray-700 font-medium truncate">{m.lead_name || m.lead_phone}</p>
                       {m.lead_name && <p className="text-xs text-gray-400">{m.lead_phone}</p>}
-                      {m.failure_reason && <p className="text-xs text-red-400 truncate">{m.failure_reason}</p>}
+                      {m.failure_reason && (
+                        <p className="text-xs text-red-500 mt-0.5 break-all">{m.failure_reason}</p>
+                      )}
                     </div>
                     <div className="text-right flex-shrink-0">
                       <span className={`text-xs font-medium ${STATUS_COLOR[m.status] ?? 'text-gray-500'}`}>
@@ -214,6 +291,140 @@ function DeliveryReportModal({ campaignId, onClose }: { campaignId: string; onCl
         ) : (
           <div className="flex-1 flex items-center justify-center py-12 text-gray-400 text-sm">Sem dados disponíveis.</div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Resume modal — seleciona instância ao retomar campanha pausada
+// ---------------------------------------------------------------------------
+function ResumeModal({
+  campaign,
+  instances,
+  onConfirm,
+  onClose,
+  isPending,
+}: {
+  campaign: Campaign
+  instances: Instance[]
+  onConfirm: (allowedInstances: string[] | null) => void
+  onClose: () => void
+  isPending: boolean
+}) {
+  // null = automático (sistema escolhe); string = nome da instância selecionada
+  const [selected, setSelected] = useState<string | null>(null)
+
+  const connected = instances.filter(i => i.status === 'connected')
+  const selectedInst = instances.find(i => i.evolution_instance_name === selected)
+  const lowHealth = selectedInst && selectedInst.health_score < 40
+
+  const handleConfirm = () => {
+    if (selected === null) {
+      // Automático: remove qualquer restrição
+      onConfirm([])
+    } else {
+      onConfirm([selected])
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 className="font-semibold text-gray-800">Retomar campanha</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+        </div>
+
+        <div className="px-6 py-4 space-y-3">
+          <p className="text-sm text-gray-600">
+            Selecione qual instância usar ao retomar <strong>{campaign.name}</strong>.
+            Os leads já processados serão pulados automaticamente.
+          </p>
+
+          <div className="space-y-2">
+            {/* Automático */}
+            <label className="flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors hover:bg-gray-50 border-gray-200">
+              <input
+                type="radio"
+                name="instance"
+                checked={selected === null}
+                onChange={() => setSelected(null)}
+                className="accent-indigo-600"
+              />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-gray-800">Automático</p>
+                <p className="text-xs text-gray-400">Sistema escolhe a melhor instância disponível</p>
+              </div>
+              <Cpu size={16} className="text-indigo-400" />
+            </label>
+
+            {/* Instâncias conectadas */}
+            {connected.length === 0 ? (
+              <p className="text-xs text-red-500 px-1">Nenhuma instância conectada no momento.</p>
+            ) : (
+              connected.map(inst => {
+                const health = inst.health_score
+                const healthColor = health >= 70 ? 'bg-green-500' : health >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+                const healthText = health >= 70 ? 'text-green-600' : health >= 40 ? 'text-yellow-600' : 'text-red-600'
+                const isSelected = selected === inst.evolution_instance_name
+                return (
+                  <label
+                    key={inst.id}
+                    className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors hover:bg-gray-50 ${isSelected ? 'border-indigo-400 bg-indigo-50' : 'border-gray-200'}`}
+                  >
+                    <input
+                      type="radio"
+                      name="instance"
+                      checked={isSelected}
+                      onChange={() => setSelected(inst.evolution_instance_name)}
+                      className="accent-indigo-600"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-800 truncate">{inst.display_name}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center gap-1">
+                          <div className="w-16 bg-gray-200 rounded-full h-1.5">
+                            <div className={`h-1.5 rounded-full ${healthColor}`} style={{ width: `${health}%` }} />
+                          </div>
+                          <span className={`text-xs font-medium ${healthText}`}>{health}</span>
+                        </div>
+                        <span className="text-xs text-gray-400">{inst.daily_sent}/{inst.daily_limit} msgs</span>
+                      </div>
+                    </div>
+                  </label>
+                )
+              })
+            )}
+          </div>
+
+          {/* Aviso de saúde baixa */}
+          {lowHealth && (
+            <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertTriangle size={14} className="text-red-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-red-700">
+                <strong>Atenção:</strong> esta instância tem saúde muito baixa ({selectedInst?.health_score}).
+                Há risco elevado de bloqueio pelo WhatsApp. Prefira uma instância com saúde acima de 40.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 pb-5 flex gap-2">
+          <button
+            onClick={handleConfirm}
+            disabled={isPending || connected.length === 0}
+            className="flex-1 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-500 disabled:opacity-50 font-medium"
+          >
+            {isPending ? 'Retomando...' : 'Retomar'}
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50"
+          >
+            Cancelar
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -320,6 +531,7 @@ export default function Campaigns() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [reportCampId, setReportCampId] = useState<string | null>(null)
+  const [resumeCamp, setResumeCamp] = useState<Campaign | null>(null)
 
   const { data: instancesData } = useQuery({
     queryKey: ['instances'],
@@ -370,8 +582,12 @@ export default function Campaigns() {
   })
 
   const resume = useMutation({
-    mutationFn: resumeCampaign,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
+    mutationFn: ({ id, allowedInstances }: { id: string; allowedInstances: string[] | null }) =>
+      resumeCampaign(id, allowedInstances),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+      setResumeCamp(null)
+    },
   })
 
   const handleAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -676,10 +892,9 @@ export default function Campaigns() {
                     )}
                     {camp.status === 'paused' && (
                       <button
-                        onClick={() => resume.mutate(camp.id)}
-                        disabled={resume.isPending}
+                        onClick={() => setResumeCamp(camp)}
                         title="Retomar"
-                        className="p-1.5 text-indigo-500 hover:text-indigo-700 rounded-lg hover:bg-indigo-50 disabled:opacity-50"
+                        className="p-1.5 text-indigo-500 hover:text-indigo-700 rounded-lg hover:bg-indigo-50"
                       >
                         <RotateCcw size={14} />
                       </button>
@@ -783,6 +998,18 @@ export default function Campaigns() {
 
       {reportCampId && (
         <DeliveryReportModal campaignId={reportCampId} onClose={() => setReportCampId(null)} />
+      )}
+
+      {resumeCamp && (
+        <ResumeModal
+          campaign={resumeCamp}
+          instances={instancesData ?? []}
+          isPending={resume.isPending}
+          onClose={() => setResumeCamp(null)}
+          onConfirm={allowedInstances =>
+            resume.mutate({ id: resumeCamp.id, allowedInstances })
+          }
+        />
       )}
     </div>
   )

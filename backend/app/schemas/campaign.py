@@ -58,3 +58,10 @@ class CampaignListResponse(BaseModel):
     page: int
     page_size: int
     items: list[CampaignResponse]
+
+
+class ResumeRequest(BaseModel):
+    # None = mantém allowed_instances existentes
+    # [] = remove restrição (usa todas as instâncias conectadas)
+    # ["nome"] = restringe a essa instância específica
+    allowed_instances: list[str] | None = None

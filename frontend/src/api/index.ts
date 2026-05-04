@@ -82,7 +82,8 @@ export const launchCampaign = (id: string) => api.post<Campaign>(`/campaigns/${i
 
 export const pauseCampaign = (id: string) => api.post<Campaign>(`/campaigns/${id}/pause`)
 
-export const resumeCampaign = (id: string) => api.post<Campaign>(`/campaigns/${id}/resume`)
+export const resumeCampaign = (id: string, allowedInstances?: string[] | null) =>
+  api.post<Campaign>(`/campaigns/${id}/resume`, { allowed_instances: allowedInstances ?? null })
 
 export const getCampaignDeliveryReport = (id: string) =>
   api.get<DeliveryReport>(`/campaigns/${id}/delivery-report`)
