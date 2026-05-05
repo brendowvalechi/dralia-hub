@@ -16,6 +16,7 @@ export default function QRCodeModal({ instanceId, instanceName, onClose }: Props
   const [qr, setQr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [alreadyConnected, setAlreadyConnected] = useState(false)
 
   const fetchQR = async () => {
     setLoading(true)
@@ -23,9 +24,11 @@ export default function QRCodeModal({ instanceId, instanceName, onClose }: Props
       const { data } = await getQRCode(instanceId)
       setQr(data.qrcode ?? null)
       if (data.status === 'connected') {
-        toast('Instância já conectada!', 'success')
+        // Não fecha o modal automaticamente — explica ao usuário e oferece sair.
+        // Antes, fechar instantaneamente confundia: o usuário via o modal sumir
+        // e achava que o QR não tinha aparecido.
+        setAlreadyConnected(true)
         qc.invalidateQueries({ queryKey: ['instances'] })
-        onClose()
       }
     } catch {
       toast('Erro ao buscar QR Code. Verifique se a Evolution API está rodando.', 'error')
@@ -71,6 +74,14 @@ export default function QRCodeModal({ instanceId, instanceName, onClose }: Props
         {loading ? (
           <div className="flex items-center justify-center h-64">
             <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : alreadyConnected ? (
+          <div className="flex flex-col items-center justify-center h-40 gap-2 px-2 text-center">
+            <Wifi size={32} className="text-green-500" />
+            <p className="text-sm text-gray-700 font-medium">Instância já conectada</p>
+            <p className="text-xs text-gray-400">
+              Para parear outro aparelho, use o botão "Reconectar" na lista de instâncias.
+            </p>
           </div>
         ) : qr ? (
           <>

@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getInstances, syncInstance, logoutInstance, createInstance, deleteInstance, updateInstance } from '../api'
+import { getInstances, syncInstance, syncAllInstances, logoutInstance, reconnectInstance, createInstance, deleteInstance, updateInstance } from '../api'
 import { RefreshCw, LogOut, Trash2, Plus, Wifi, WifiOff, QrCode, Pencil, Check, X } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext'
 import QRCodeModal from '../components/QRCodeModal'
@@ -42,6 +42,15 @@ export default function Instances() {
     refetchInterval: 30000,
   })
 
+  // Sincroniza status de todas as instâncias com a Evolution API ao entrar na
+  // página. Sem isso, o banco pode ficar com status estagnado (DB diz
+  // 'connected' enquanto o WhatsApp já caiu) e o botão de QR Code some.
+  useEffect(() => {
+    syncAllInstances()
+      .then(() => qc.invalidateQueries({ queryKey: ['instances'] }))
+      .catch(() => {})
+  }, [qc])
+
   const sync = useMutation({
     mutationFn: syncInstance,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['instances'] }); toast('Status sincronizado', 'success') },
@@ -52,6 +61,16 @@ export default function Instances() {
     mutationFn: logoutInstance,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['instances'] }); toast('Instância desconectada', 'info') },
     onError: () => toast('Erro ao desconectar', 'error'),
+  })
+
+  const reconnect = useMutation({
+    mutationFn: reconnectInstance,
+    onSuccess: (_d, id) => {
+      qc.invalidateQueries({ queryKey: ['instances'] })
+      const inst = instances.find(i => i.id === id)
+      if (inst) setQrModal({ id: inst.id, name: inst.evolution_instance_name })
+    },
+    onError: () => toast('Erro ao reconectar', 'error'),
   })
 
   const del = useMutation({
@@ -164,9 +183,20 @@ export default function Instances() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {inst.status !== 'connected' && (
+                  {inst.status !== 'connected' ? (
                     <button onClick={() => setQrModal({ id: inst.id, name: inst.evolution_instance_name })} title="Escanear QR Code"
                       className="p-1.5 text-indigo-400 hover:text-indigo-700 rounded-lg hover:bg-indigo-50">
+                      <QrCode size={14} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        if (confirm('Desconectar e gerar novo QR Code para parear outro aparelho?')) reconnect.mutate(inst.id)
+                      }}
+                      disabled={reconnect.isPending}
+                      title="Reconectar (gera novo QR Code)"
+                      className="p-1.5 text-indigo-400 hover:text-indigo-700 rounded-lg hover:bg-indigo-50 disabled:opacity-50"
+                    >
                       <QrCode size={14} />
                     </button>
                   )}

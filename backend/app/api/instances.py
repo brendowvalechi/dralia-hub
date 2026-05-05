@@ -153,16 +153,66 @@ async def get_qrcode(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_operator),
 ):
+    """
+    Retorna o QR Code para conectar a instância ao WhatsApp.
+
+    Sincroniza primeiro o estado real com a Evolution API (evita o caso em que
+    o banco diz 'disconnected' mas a Evo já está 'open' — quando isso acontece,
+    o endpoint /instance/connect retorna apenas o state, sem QR).
+    """
     inst = await db.get(Instance, instance_id)
     if not inst:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Instância não encontrada")
 
+    # 1) Sincroniza status real antes de pedir QR
+    now = datetime.now(timezone.utc)
+    try:
+        state_data = await evolution_client.get_instance_status(inst.evolution_instance_name)
+        evo_state = state_data.get("instance", {}).get("state", "close")
+        real_status = _evo_status_to_local(evo_state)
+        if real_status != inst.status:
+            if real_status == InstanceStatus.connected:
+                inst.last_connected_at = now
+            elif inst.status == InstanceStatus.connected:
+                inst.last_disconnected_at = now
+            inst.status = real_status
+            inst.updated_at = now
+            await db.commit()
+            await db.refresh(inst)
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        # Falha de sync não bloqueia o pedido de QR — segue tentando
+        pass
+
+    # 2) Se já está conectada, não retorna QR (frontend fecha modal e mostra mensagem)
+    if inst.status == InstanceStatus.connected:
+        return InstanceQRCode(
+            instance_name=inst.evolution_instance_name,
+            qrcode=None,
+            status=inst.status.value,
+        )
+
+    # 3) Pede o QR Code
     try:
         data = await evolution_client.get_instance_qrcode(inst.evolution_instance_name)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Erro na Evolution API: {exc.response.text}")
     except httpx.RequestError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Evolution API inacessível: {exc}")
+
+    # Caso a Evo responda com state=open (acabou de conectar entre o sync e o connect),
+    # atualiza DB e retorna sem QR.
+    inner_state = (data.get("instance") or {}).get("state")
+    if inner_state == "open":
+        if inst.status != InstanceStatus.connected:
+            inst.status = InstanceStatus.connected
+            inst.last_connected_at = now
+            inst.updated_at = now
+            await db.commit()
+        return InstanceQRCode(
+            instance_name=inst.evolution_instance_name,
+            qrcode=None,
+            status=InstanceStatus.connected.value,
+        )
 
     # A Evolution API pode retornar o QR em diferentes estruturas dependendo da versão
     qr = (
@@ -177,6 +227,70 @@ async def get_qrcode(
         qrcode=qr,
         status=inst.status.value,
     )
+
+
+# ---------------------------------------------------------------------------
+# RECONNECT — força desconexão e nova geração de QR Code
+# Útil quando a instância está marcada como conectada mas o usuário precisa
+# pareá-la novamente (troca de aparelho, sessão expirada do lado do WhatsApp).
+# ---------------------------------------------------------------------------
+@router.post("/{instance_id}/reconnect", response_model=InstanceResponse)
+async def reconnect_instance(
+    instance_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_operator),
+):
+    inst = await db.get(Instance, instance_id)
+    if not inst:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Instância não encontrada")
+
+    # Logout best-effort — mesmo que falhe, deixamos o status como disconnected
+    # para liberar o botão "QR Code" no frontend e o próximo pedido de QR
+    # forçará a Evo a regenerar o pareamento.
+    try:
+        await evolution_client.logout_instance(inst.evolution_instance_name)
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        pass
+
+    now = datetime.now(timezone.utc)
+    if inst.status == InstanceStatus.connected:
+        inst.last_disconnected_at = now
+    inst.status = InstanceStatus.disconnected
+    inst.updated_at = now
+    await db.commit()
+    await db.refresh(inst)
+    return inst
+
+
+# ---------------------------------------------------------------------------
+# SYNC ALL — sincroniza estado de todas as instâncias com a Evolution API
+# ---------------------------------------------------------------------------
+@router.post("/sync-all")
+async def sync_all_instances(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_operator),
+):
+    rows = (await db.execute(select(Instance))).scalars().all()
+    now = datetime.now(timezone.utc)
+    updated = 0
+    for inst in rows:
+        try:
+            data = await evolution_client.get_instance_status(inst.evolution_instance_name)
+        except (httpx.HTTPStatusError, httpx.RequestError):
+            continue
+        evo_state = data.get("instance", {}).get("state", "close")
+        new_status = _evo_status_to_local(evo_state)
+        if new_status != inst.status:
+            if new_status == InstanceStatus.connected:
+                inst.last_connected_at = now
+            elif inst.status == InstanceStatus.connected:
+                inst.last_disconnected_at = now
+            inst.status = new_status
+            inst.updated_at = now
+            updated += 1
+    if updated:
+        await db.commit()
+    return {"total": len(rows), "updated": updated}
 
 
 # ---------------------------------------------------------------------------

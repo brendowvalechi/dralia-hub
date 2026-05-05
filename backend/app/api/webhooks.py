@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.campaign import Campaign
+from app.models.instance import Instance, InstanceStatus
 from app.models.message import Message, MessageStatus
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,34 @@ async def evolution_webhook(
     data = payload.get("data", {})
 
     logger.debug(f"Webhook recebido: event={event} instance={instance_name}")
+
+    # ── Eventos de conexão: mantém status da instância sincronizado ─────────
+    # Sem isso, o banco fica com status estagnado quando o WhatsApp se reconecta
+    # ou cai sozinho — e o botão de QR Code some/aparece em momentos errados.
+    if event in ("connection.update", "connection-update", "CONNECTION_UPDATE"):
+        evo_state = (data.get("state") or data.get("status") or "").lower()
+        if evo_state and instance_name:
+            inst = (await db.execute(
+                select(Instance).where(Instance.evolution_instance_name == instance_name)
+            )).scalar_one_or_none()
+            if inst:
+                now = datetime.now(timezone.utc)
+                if evo_state == "open":
+                    new_status = InstanceStatus.connected
+                elif evo_state in ("close", "connecting"):
+                    new_status = InstanceStatus.disconnected
+                else:
+                    return {"ok": True, "skipped": True, "unknown_state": evo_state}
+                if new_status != inst.status:
+                    if new_status == InstanceStatus.connected:
+                        inst.last_connected_at = now
+                    elif inst.status == InstanceStatus.connected:
+                        inst.last_disconnected_at = now
+                    inst.status = new_status
+                    inst.updated_at = now
+                    await db.commit()
+                    logger.info(f"Instância {instance_name} {inst.status} via webhook (state={evo_state})")
+        return {"ok": True, "instance_event": True}
 
     # Só processa atualizações de mensagem
     if event not in ("messages.update", "message.update"):
@@ -157,3 +186,20 @@ async def evolution_webhook(
     logger.info(f"Mensagem {msg.id} atualizada: {old_status} → {new_status} (lead={phone})")
 
     return {"ok": True, "message_id": str(msg.id), "status": new_status}
+
+
+@router.post("/evolution/{event_path:path}", status_code=http_status.HTTP_200_OK)
+async def evolution_webhook_by_event(
+    event_path: str,  # noqa: ARG001 — path param exigido pelo FastAPI; valor real vem do payload
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Catch-all para webhooks por evento da Evolution API.
+
+    Quando WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=true (ou em versões futuras da Evo
+    que roteiam por sub-path como /webhooks/evolution/connection-update),
+    cai aqui. Repassamos para o handler principal — o campo `event` no payload
+    é sempre a fonte de verdade.
+    """
+    return await evolution_webhook(request, db)

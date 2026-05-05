@@ -61,9 +61,13 @@ export const deleteInstance = (id: string) => api.delete(`/instances/${id}`)
 
 export const syncInstance = (id: string) => api.post<Instance>(`/instances/${id}/sync`)
 
+export const syncAllInstances = () => api.post<{ total: number; updated: number }>(`/instances/sync-all`)
+
 export const getQRCode = (id: string) => api.get(`/instances/${id}/qrcode`)
 
 export const logoutInstance = (id: string) => api.post<Instance>(`/instances/${id}/logout`)
+
+export const reconnectInstance = (id: string) => api.post<Instance>(`/instances/${id}/reconnect`)
 
 // ── Campanhas ───────────────────────────────────────────────────────────────
 export const getCampaigns = (params?: { page?: number; page_size?: number; status?: string }) =>

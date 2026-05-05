@@ -297,7 +297,7 @@ function DeliveryReportModal({ campaignId, onClose }: { campaignId: string; onCl
 }
 
 // ---------------------------------------------------------------------------
-// Resume modal — seleciona instância ao retomar campanha pausada
+// Resume modal — seleciona uma ou mais instâncias ao retomar campanha pausada
 // ---------------------------------------------------------------------------
 function ResumeModal({
   campaign,
@@ -312,21 +312,33 @@ function ResumeModal({
   onClose: () => void
   isPending: boolean
 }) {
-  // null = automático (sistema escolhe); string = nome da instância selecionada
-  const [selected, setSelected] = useState<string | null>(null)
+  // 'auto' = sistema escolhe qualquer conectada; 'manual' = subconjunto marcado abaixo
+  const [mode, setMode] = useState<'auto' | 'manual'>(() =>
+    campaign.allowed_instances && campaign.allowed_instances.length > 0 ? 'manual' : 'auto'
+  )
+  const [selected, setSelected] = useState<string[]>(campaign.allowed_instances ?? [])
 
   const connected = instances.filter(i => i.status === 'connected')
-  const selectedInst = instances.find(i => i.evolution_instance_name === selected)
-  const lowHealth = selectedInst && selectedInst.health_score < 40
+  const selectedInsts = connected.filter(i => selected.includes(i.evolution_instance_name))
+  const lowHealthSelected = selectedInsts.filter(i => i.health_score < 40)
+
+  const toggle = (name: string) => {
+    setSelected(s => (s.includes(name) ? s.filter(n => n !== name) : [...s, name]))
+  }
 
   const handleConfirm = () => {
-    if (selected === null) {
-      // Automático: remove qualquer restrição
+    if (mode === 'auto') {
+      // [] = sem restrição (todas as conectadas elegíveis)
       onConfirm([])
     } else {
-      onConfirm([selected])
+      onConfirm(selected)
     }
   }
+
+  const canSubmit =
+    !isPending &&
+    connected.length > 0 &&
+    (mode === 'auto' || selected.length > 0)
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
@@ -338,73 +350,97 @@ function ResumeModal({
 
         <div className="px-6 py-4 space-y-3">
           <p className="text-sm text-gray-600">
-            Selecione qual instância usar ao retomar <strong>{campaign.name}</strong>.
+            Selecione quais instâncias usar ao retomar <strong>{campaign.name}</strong>.
             Os leads já processados serão pulados automaticamente.
           </p>
 
-          <div className="space-y-2">
-            {/* Automático */}
-            <label className="flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors hover:bg-gray-50 border-gray-200">
-              <input
-                type="radio"
-                name="instance"
-                checked={selected === null}
-                onChange={() => setSelected(null)}
-                className="accent-indigo-600"
-              />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-gray-800">Automático</p>
-                <p className="text-xs text-gray-400">Sistema escolhe a melhor instância disponível</p>
-              </div>
-              <Cpu size={16} className="text-indigo-400" />
-            </label>
-
-            {/* Instâncias conectadas */}
-            {connected.length === 0 ? (
-              <p className="text-xs text-red-500 px-1">Nenhuma instância conectada no momento.</p>
-            ) : (
-              connected.map(inst => {
-                const health = inst.health_score
-                const healthColor = health >= 70 ? 'bg-green-500' : health >= 40 ? 'bg-yellow-500' : 'bg-red-500'
-                const healthText = health >= 70 ? 'text-green-600' : health >= 40 ? 'text-yellow-600' : 'text-red-600'
-                const isSelected = selected === inst.evolution_instance_name
-                return (
-                  <label
-                    key={inst.id}
-                    className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors hover:bg-gray-50 ${isSelected ? 'border-indigo-400 bg-indigo-50' : 'border-gray-200'}`}
-                  >
-                    <input
-                      type="radio"
-                      name="instance"
-                      checked={isSelected}
-                      onChange={() => setSelected(inst.evolution_instance_name)}
-                      className="accent-indigo-600"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-800 truncate">{inst.display_name}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="flex items-center gap-1">
-                          <div className="w-16 bg-gray-200 rounded-full h-1.5">
-                            <div className={`h-1.5 rounded-full ${healthColor}`} style={{ width: `${health}%` }} />
-                          </div>
-                          <span className={`text-xs font-medium ${healthText}`}>{health}</span>
-                        </div>
-                        <span className="text-xs text-gray-400">{inst.daily_sent}/{inst.daily_limit} msgs</span>
-                      </div>
-                    </div>
-                  </label>
-                )
-              })
-            )}
+          {/* Toggle modo automático/manual */}
+          <div className="grid grid-cols-2 gap-2 bg-gray-50 rounded-xl p-1">
+            <button
+              type="button"
+              onClick={() => setMode('auto')}
+              className={`text-xs font-medium py-1.5 rounded-lg transition-colors ${
+                mode === 'auto' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Automático (todas)
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('manual')}
+              className={`text-xs font-medium py-1.5 rounded-lg transition-colors ${
+                mode === 'manual' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Escolher manualmente
+            </button>
           </div>
 
+          {mode === 'auto' && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-indigo-50 border border-indigo-100 rounded-lg">
+              <Cpu size={14} className="text-indigo-500 flex-shrink-0" />
+              <p className="text-xs text-indigo-700">
+                O sistema usa todas as instâncias conectadas, balanceando por saúde e DDD.
+              </p>
+            </div>
+          )}
+
+          {mode === 'manual' && (
+            <div className="space-y-2">
+              {connected.length === 0 ? (
+                <p className="text-xs text-red-500 px-1">Nenhuma instância conectada no momento.</p>
+              ) : (
+                connected.map(inst => {
+                  const health = inst.health_score
+                  const healthColor = health >= 70 ? 'bg-green-500' : health >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+                  const healthText = health >= 70 ? 'text-green-600' : health >= 40 ? 'text-yellow-600' : 'text-red-600'
+                  const isSelected = selected.includes(inst.evolution_instance_name)
+                  return (
+                    <label
+                      key={inst.id}
+                      className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors hover:bg-gray-50 ${isSelected ? 'border-indigo-400 bg-indigo-50' : 'border-gray-200'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggle(inst.evolution_instance_name)}
+                        className="accent-indigo-600"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-800 truncate">{inst.display_name}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="flex items-center gap-1">
+                            <div className="w-16 bg-gray-200 rounded-full h-1.5">
+                              <div className={`h-1.5 rounded-full ${healthColor}`} style={{ width: `${health}%` }} />
+                            </div>
+                            <span className={`text-xs font-medium ${healthText}`}>{health}</span>
+                          </div>
+                          <span className="text-xs text-gray-400">{inst.daily_sent}/{inst.daily_limit} msgs</span>
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })
+              )}
+              {connected.length > 0 && (
+                <p className="text-xs text-gray-400 px-1">
+                  {selected.length === 0
+                    ? 'Marque ao menos uma instância.'
+                    : `${selected.length} de ${connected.length} selecionada${selected.length > 1 ? 's' : ''}.`}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Aviso de saúde baixa */}
-          {lowHealth && (
+          {mode === 'manual' && lowHealthSelected.length > 0 && (
             <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
               <AlertTriangle size={14} className="text-red-500 mt-0.5 flex-shrink-0" />
               <p className="text-xs text-red-700">
-                <strong>Atenção:</strong> esta instância tem saúde muito baixa ({selectedInst?.health_score}).
-                Há risco elevado de bloqueio pelo WhatsApp. Prefira uma instância com saúde acima de 40.
+                <strong>Atenção:</strong> {lowHealthSelected.length === 1
+                  ? `a instância ${lowHealthSelected[0].display_name} tem saúde baixa (${lowHealthSelected[0].health_score})`
+                  : `${lowHealthSelected.length} instâncias selecionadas têm saúde abaixo de 40`}.
+                Há risco elevado de bloqueio pelo WhatsApp.
               </p>
             </div>
           )}
@@ -413,7 +449,7 @@ function ResumeModal({
         <div className="px-6 pb-5 flex gap-2">
           <button
             onClick={handleConfirm}
-            disabled={isPending || connected.length === 0}
+            disabled={!canSubmit}
             className="flex-1 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-500 disabled:opacity-50 font-medium"
           >
             {isPending ? 'Retomando...' : 'Retomar'}
@@ -435,12 +471,14 @@ function ResumeModal({
 // ---------------------------------------------------------------------------
 function InlineEditForm({
   camp,
+  connectedInstances,
   onSave,
   onCancel,
   isSaving,
 }: {
   camp: Campaign
-  onSave: (data: { name: string; message_template: string; scheduled_at?: string }) => void
+  connectedInstances: Instance[]
+  onSave: (data: { name: string; message_template: string; scheduled_at?: string; allowed_instances?: string[] | null }) => void
   onCancel: () => void
   isSaving: boolean
 }) {
@@ -449,7 +487,12 @@ function InlineEditForm({
   const [scheduledAt, setScheduledAt] = useState(
     camp.scheduled_at ? camp.scheduled_at.slice(0, 16) : ''
   )
+  const [allowedInstances, setAllowedInstances] = useState<string[]>(camp.allowed_instances ?? [])
   const [error, setError] = useState('')
+
+  const toggleInstance = (n: string) => {
+    setAllowedInstances(s => (s.includes(n) ? s.filter(x => x !== n) : [...s, n]))
+  }
 
   const handleSave = () => {
     if (!name.trim() || !message.trim()) {
@@ -460,6 +503,7 @@ function InlineEditForm({
       name,
       message_template: message,
       scheduled_at: scheduledAt || undefined,
+      allowed_instances: allowedInstances.length > 0 ? allowedInstances : null,
     })
   }
 
@@ -485,6 +529,32 @@ function InlineEditForm({
           />
         </div>
       </div>
+
+      <div>
+        <label className="text-xs text-gray-500 block mb-1 flex items-center gap-1">
+          <Cpu size={11} /> Instâncias permitidas (opcional, marque uma ou mais)
+        </label>
+        {connectedInstances.length === 0 ? (
+          <p className="text-xs text-gray-400 py-2">Nenhuma instância conectada.</p>
+        ) : (
+          <div className="space-y-1 max-h-28 overflow-y-auto border border-gray-200 rounded-lg px-3 py-2 bg-white">
+            {connectedInstances.map(inst => (
+              <label key={inst.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={allowedInstances.includes(inst.evolution_instance_name)}
+                  onChange={() => toggleInstance(inst.evolution_instance_name)}
+                  className="rounded"
+                />
+                <span className="truncate">{inst.display_name}</span>
+                <span className="text-xs text-gray-400 ml-auto">{inst.daily_sent}/{inst.daily_limit}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        <p className="text-xs text-gray-400 mt-1">Nenhuma marcada = usa todas as conectadas.</p>
+      </div>
+
       <div>
         <label className="text-xs text-gray-500 block mb-1">
           Mensagem (suporta spintax: {'{oi|olá}'} e variáveis: {'{{nome}}'})
@@ -953,6 +1023,7 @@ export default function Campaigns() {
               {editingId === camp.id && (
                 <InlineEditForm
                   camp={camp}
+                  connectedInstances={connectedInstances}
                   isSaving={update.isPending}
                   onSave={d => update.mutate({ id: camp.id, data: d })}
                   onCancel={() => setEditingId(null)}
