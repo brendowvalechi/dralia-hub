@@ -8,7 +8,25 @@ import httpx
 
 from app.config import settings
 
-_TIMEOUT = 20.0
+_TIMEOUT = 30.0  # aumentado de 20s: sendWhatsAppAudio pode ser mais lento
+
+
+def extract_error(exc: Exception) -> str:
+    """
+    Retorna uma string descritiva do erro para armazenar em failure_reason.
+
+    - HTTPStatusError: inclui status + corpo da resposta (onde fica a mensagem real da Evolution API)
+    - Timeouts/ConnectionError: str(exc) é vazio em httpx; usa o nome da classe como fallback
+    - Outros: str(exc) ou nome da classe
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            body = exc.response.text[:300]
+        except Exception:
+            body = ""
+        return f"HTTP {exc.response.status_code}: {body}"[:500]
+    msg = str(exc).strip()
+    return (msg or type(exc).__name__)[:500]
 
 
 def _normalize_phone(phone: str) -> str:

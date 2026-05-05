@@ -25,6 +25,7 @@ from app.models.instance import Instance, InstanceStatus
 from app.models.lead import Lead, LeadStatus
 from app.models.message import Message, MessageStatus
 from app.services import antiban_engine, evolution_client, spintax_engine
+from app.services.evolution_client import extract_error
 from app.services.instance_router import pick_instance
 
 from sqlalchemy import select, text, update, exists
@@ -295,8 +296,8 @@ async def _run_campaign_async(campaign_id: str) -> None:
                 instance.consecutive_failures = 0
 
             except Exception as exc:
-                err_str = str(exc)[:500]
-                logger.error(f"Erro ao enviar para {lead.phone}: {err_str}")
+                err_str = extract_error(exc)
+                logger.error(f"Erro ao enviar para {lead.phone} [{type(exc).__name__}]: {err_str}")
                 msg.status = MessageStatus.failed
                 msg.failure_reason = err_str
                 camp.failed_count += 1
