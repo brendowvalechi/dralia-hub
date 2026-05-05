@@ -39,6 +39,9 @@ class Instance(Base):
     daily_sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     warmup_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ban_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Falhas consecutivas (zera a cada envio bem-sucedido). Atinge MAX_CONSECUTIVE_FAILURES
+    # → instância vai pra quarentena automaticamente.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_connected_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -41,6 +41,7 @@ export interface Instance {
   daily_sent: number
   warmup_day: number | null
   ban_count: number
+  consecutive_failures: number
   last_connected_at: string | null
   last_disconnected_at: string | null
   created_at: string
@@ -58,6 +59,7 @@ export interface Campaign {
   status: 'draft' | 'scheduled' | 'running' | 'paused' | 'completed' | 'failed'
   lead_group: string | null
   allowed_instances: string[] | null
+  use_windows: boolean
   scheduled_at: string | null
   started_at: string | null
   completed_at: string | null

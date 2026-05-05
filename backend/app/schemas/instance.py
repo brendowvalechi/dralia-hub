@@ -34,6 +34,7 @@ class InstanceResponse(BaseModel):
     daily_sent: int
     warmup_day: int | None
     ban_count: int
+    consecutive_failures: int
     last_connected_at: datetime | None
     last_disconnected_at: datetime | None
     created_at: datetime

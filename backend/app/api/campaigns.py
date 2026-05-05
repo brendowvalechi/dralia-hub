@@ -106,6 +106,9 @@ async def create_campaign(
         media_url=body.media_url,
         media_type=body.media_type,
         scheduled_at=body.scheduled_at,
+        lead_group=body.lead_group,
+        allowed_instances=body.allowed_instances,
+        use_windows=body.use_windows,
         status=camp_status,
     )
     db.add(camp)

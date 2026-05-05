@@ -35,10 +35,11 @@ function ProgressBar({ sent, total }: { sent: number; total: number }) {
 }
 
 // ---------------------------------------------------------------------------
-// Estimativa de conclusão — baseada no delay anti-ban de 15–90s entre mensagens
+// Estimativa de conclusão — baseada no delay anti-ban entre mensagens
+// (alinhado com antiban_engine.MIN_DELAY/MAX_DELAY no backend)
 // ---------------------------------------------------------------------------
-const MIN_DELAY_S = 15   // delay mínimo real (antiban_engine.py)
-const MAX_DELAY_S = 90   // delay máximo real
+const MIN_DELAY_S = 30
+const MAX_DELAY_S = 180
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`
@@ -67,7 +68,8 @@ function EtaEstimate({ camp }: { camp: Campaign }) {
         <span className="text-gray-600 font-medium">
           Término estimado: {minStr} – {maxStr}
         </span>
-        {' '}· O sistema aguarda entre 15–90 segundos entre cada envio para não ser bloqueado pelo WhatsApp. O tempo real depende dessa variação.
+        {' '}· O sistema aguarda entre 30–180 segundos entre cada envio para não ser bloqueado pelo WhatsApp.
+        {camp.use_windows && ' Com janelas ativas, o tempo cresce porque há pausas de almoço e jantar.'}
       </span>
     </div>
   )
@@ -137,6 +139,7 @@ const EMPTY_FORM = {
   audio_filename: '',
   lead_group: '',
   allowed_instances: [] as string[],
+  use_windows: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +481,7 @@ function InlineEditForm({
 }: {
   camp: Campaign
   connectedInstances: Instance[]
-  onSave: (data: { name: string; message_template: string; scheduled_at?: string; allowed_instances?: string[] | null }) => void
+  onSave: (data: { name: string; message_template: string; scheduled_at?: string; allowed_instances?: string[] | null; use_windows?: boolean }) => void
   onCancel: () => void
   isSaving: boolean
 }) {
@@ -488,6 +491,7 @@ function InlineEditForm({
     camp.scheduled_at ? camp.scheduled_at.slice(0, 16) : ''
   )
   const [allowedInstances, setAllowedInstances] = useState<string[]>(camp.allowed_instances ?? [])
+  const [useWindows, setUseWindows] = useState<boolean>(camp.use_windows ?? false)
   const [error, setError] = useState('')
 
   const toggleInstance = (n: string) => {
@@ -504,6 +508,7 @@ function InlineEditForm({
       message_template: message,
       scheduled_at: scheduledAt || undefined,
       allowed_instances: allowedInstances.length > 0 ? allowedInstances : null,
+      use_windows: useWindows,
     })
   }
 
@@ -566,6 +571,24 @@ function InlineEditForm({
           className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
         />
       </div>
+
+      <label className="flex items-start gap-2 cursor-pointer bg-amber-50/50 border border-amber-200 rounded-lg p-3">
+        <input
+          type="checkbox"
+          checked={useWindows}
+          onChange={e => setUseWindows(e.target.checked)}
+          className="accent-amber-600 mt-0.5"
+        />
+        <div className="flex-1">
+          <p className="text-xs font-medium text-amber-900 flex items-center gap-1.5">
+            <Clock size={12} /> Distribuir em janelas (manhã/tarde/noite)
+          </p>
+          <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+            Divide os envios em 3 blocos do dia com pausas. Reduz risco de ban.
+          </p>
+        </div>
+      </label>
+
       {error && <p className="text-red-500 text-sm">{error}</p>}
       <div className="flex gap-2">
         <button
@@ -693,6 +716,7 @@ export default function Campaigns() {
       scheduled_at: form.scheduled_at || undefined,
       lead_group: form.lead_group || undefined,
       allowed_instances: form.allowed_instances.length > 0 ? form.allowed_instances : undefined,
+      use_windows: form.use_windows,
     })
   }
 
@@ -802,6 +826,31 @@ export default function Campaigns() {
             />
           </div>
 
+          {/* Janelas de envio (anti-ban) */}
+          <div className="border border-amber-200 bg-amber-50/40 rounded-lg p-4 space-y-2">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.use_windows}
+                onChange={e => setForm(f => ({ ...f, use_windows: e.target.checked }))}
+                className="accent-amber-600 mt-0.5"
+              />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-amber-900 flex items-center gap-1.5">
+                  <Clock size={13} /> Distribuir envios ao longo do dia (recomendado)
+                </p>
+                <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+                  Em vez de disparar todas as mensagens em sequência, o sistema divide
+                  o limite diário em <strong>3 blocos: manhã (8h–11h30), tarde (14h–17h) e noite
+                  (17h–20h)</strong>, com pausas de almoço e jantar. Ajuda a parecer comportamento
+                  humano e reduz risco de bloqueio. <strong>Quem agendar a campanha não precisa
+                  fazer nada</strong> — basta marcar essa caixa, o resto é automático: o robô
+                  envia o quanto pode dentro de cada bloco e dorme entre eles.
+                </p>
+              </div>
+            </label>
+          </div>
+
           {/* Audio upload */}
           <div className="border border-dashed border-gray-200 rounded-lg p-4 space-y-2">
             <p className="text-xs font-medium text-gray-600 flex items-center gap-1.5">
@@ -903,6 +952,11 @@ export default function Campaigns() {
                         {camp.allowed_instances && camp.allowed_instances.length > 0 && (
                           <span className="flex items-center gap-1 bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full text-xs">
                             <Cpu size={9} /> {camp.allowed_instances.length} inst.
+                          </span>
+                        )}
+                        {camp.use_windows && (
+                          <span title="Envios distribuídos em janelas do dia (manhã/tarde/noite)" className="flex items-center gap-1 bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded-full text-xs">
+                            <Clock size={9} /> janelas
                           </span>
                         )}
                         {camp.scheduled_at &&

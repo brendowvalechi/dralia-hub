@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -51,6 +51,9 @@ class Campaign(Base):
     )
     lead_group: Mapped[str | None] = mapped_column(String(100), nullable=True)
     allowed_instances: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Quando True, distribui os envios em janelas do dia (manhã/tarde/noite)
+    # com pausas de almoço e jantar — ver antiban_engine.SEND_WINDOWS.
+    use_windows: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

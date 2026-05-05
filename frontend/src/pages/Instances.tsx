@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getInstances, syncInstance, syncAllInstances, logoutInstance, reconnectInstance, createInstance, deleteInstance, updateInstance } from '../api'
-import { RefreshCw, LogOut, Trash2, Plus, Wifi, WifiOff, QrCode, Pencil, Check, X } from 'lucide-react'
+import { RefreshCw, LogOut, Trash2, Plus, Wifi, WifiOff, QrCode, Pencil, Check, X, AlertCircle } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext'
 import QRCodeModal from '../components/QRCodeModal'
 import type { Instance } from '../types'
@@ -14,14 +14,23 @@ const STATUS_COLOR: Record<string, string> = {
   quarantine: 'text-orange-500',
 }
 
+// Mantém alinhado com backend antiban_engine.MIN_HEALTH_SCORE.
+// Abaixo desse valor o instance_router NÃO usa a instância em campanhas.
+const MIN_HEALTH_TO_SEND = 60
+
 function HealthBar({ score }: { score: number }) {
-  const color = score >= 70 ? 'bg-green-500' : score >= 40 ? 'bg-yellow-500' : 'bg-red-500'
+  // >=70 verde · 60-69 amarelo (no limite) · <60 vermelho (BLOQUEADO de envios)
+  const color = score >= 70 ? 'bg-green-500' : score >= MIN_HEALTH_TO_SEND ? 'bg-yellow-500' : 'bg-red-500'
+  const blocked = score < MIN_HEALTH_TO_SEND
   return (
     <div className="flex items-center gap-2">
-      <div className="flex-1 bg-gray-100 rounded-full h-1.5">
+      <div
+        className="flex-1 bg-gray-100 rounded-full h-1.5"
+        title={blocked ? `Saúde abaixo de ${MIN_HEALTH_TO_SEND}: bloqueado para campanhas` : undefined}
+      >
         <div className={`h-1.5 rounded-full ${color}`} style={{ width: `${score}%` }} />
       </div>
-      <span className="text-xs text-gray-500 w-8">{score}</span>
+      <span className={`text-xs w-8 ${blocked ? 'text-red-600 font-semibold' : 'text-gray-500'}`}>{score}</span>
     </div>
   )
 }
@@ -146,6 +155,15 @@ export default function Instances() {
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" min={1} max={1000} />
             </div>
           </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
+            <p className="font-medium mb-1">Limites recomendados (anti-ban)</p>
+            <p className="leading-relaxed">
+              Para um número novo: <strong>15–20/dia nos primeiros dias</strong>, subindo gradualmente
+              (35 na 1ª semana, 60 na 2ª, 130 na 3ª, 250 a partir do mês). Para números que já
+              passaram por warmup em outro sistema: comece em <strong>50/dia</strong> e suba devagar.
+              100+/dia em número recente foi a causa de bans recentes.
+            </p>
+          </div>
           {formError && <p className="text-red-500 text-sm">{formError}</p>}
           <div className="flex gap-2">
             <button onClick={() => {
@@ -222,32 +240,37 @@ export default function Instances() {
                 <div>
                   <p className="text-xs text-gray-400 mb-1">Envios hoje</p>
                   {editingLimitId === inst.id ? (
-                    <div className="flex items-center gap-1">
-                      <span className="text-gray-700">{inst.daily_sent} /</span>
-                      <input
-                        type="number"
-                        value={editLimitValue}
-                        onChange={e => setEditLimitValue(Number(e.target.value))}
-                        min={1}
-                        max={1000}
-                        className="w-20 border border-indigo-300 rounded px-1.5 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      />
-                      <button
-                        onClick={() => updateLimit.mutate({ id: inst.id, daily_limit: editLimitValue })}
-                        disabled={updateLimit.isPending}
-                        className="p-0.5 text-green-600 hover:text-green-800 disabled:opacity-50"
-                        title="Salvar"
-                      >
-                        <Check size={13} />
-                      </button>
-                      <button
-                        onClick={() => setEditingLimitId(null)}
-                        className="p-0.5 text-gray-400 hover:text-gray-600"
-                        title="Cancelar"
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
+                    <>
+                      <div className="flex items-center gap-1">
+                        <span className="text-gray-700">{inst.daily_sent} /</span>
+                        <input
+                          type="number"
+                          value={editLimitValue}
+                          onChange={e => setEditLimitValue(Number(e.target.value))}
+                          min={1}
+                          max={1000}
+                          className="w-20 border border-indigo-300 rounded px-1.5 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                        <button
+                          onClick={() => updateLimit.mutate({ id: inst.id, daily_limit: editLimitValue })}
+                          disabled={updateLimit.isPending}
+                          className="p-0.5 text-green-600 hover:text-green-800 disabled:opacity-50"
+                          title="Salvar"
+                        >
+                          <Check size={13} />
+                        </button>
+                        <button
+                          onClick={() => setEditingLimitId(null)}
+                          className="p-0.5 text-gray-400 hover:text-gray-600"
+                          title="Cancelar"
+                        >
+                          <X size={13} />
+                        </button>
+                      </div>
+                      <p className="text-xs text-amber-700 mt-1">
+                        Recomendado: 50/dia para números fora do warmup. Acima de 100/dia = risco alto.
+                      </p>
+                    </>
                   ) : (
                     <div className="flex items-center gap-1.5">
                       <p className="font-medium text-gray-700">{inst.daily_sent} / {inst.daily_limit}</p>
@@ -258,6 +281,11 @@ export default function Instances() {
                       >
                         <Pencil size={11} />
                       </button>
+                      {inst.daily_limit > 100 && (
+                        <span title="Acima do recomendado (100/dia) — risco de ban" className="text-amber-500">
+                          <AlertCircle size={11} />
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -266,6 +294,31 @@ export default function Instances() {
                   <HealthBar score={inst.health_score} />
                 </div>
               </div>
+
+              {/* Avisos de risco — abaixo do mínimo, em quarentena, ou com falhas em sequência */}
+              {(inst.health_score < MIN_HEALTH_TO_SEND || inst.status === 'quarantine' || inst.status === 'banned' || inst.consecutive_failures >= 3) && (
+                <div className="mt-3 flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs">
+                  <AlertCircle size={13} className="text-red-500 mt-0.5 flex-shrink-0" />
+                  <div className="text-red-700">
+                    {inst.status === 'banned' && <p><strong>Banida.</strong> Use outro número.</p>}
+                    {inst.status === 'quarantine' && (
+                      <p>
+                        <strong>Em quarentena.</strong> Bloqueada de envios após falhas em sequência ou erro grave.
+                        Sincronize, verifique a conexão e, se OK, edite o status manualmente.
+                      </p>
+                    )}
+                    {inst.status !== 'banned' && inst.status !== 'quarantine' && inst.health_score < MIN_HEALTH_TO_SEND && (
+                      <p>
+                        <strong>Saúde abaixo de {MIN_HEALTH_TO_SEND}.</strong> Bloqueada para campanhas até a saúde subir
+                        (atualizada no fim do dia conforme taxa de entrega).
+                      </p>
+                    )}
+                    {inst.consecutive_failures >= 3 && inst.status !== 'quarantine' && (
+                      <p className="mt-0.5">{inst.consecutive_failures} falhas consecutivas — em {5 - inst.consecutive_failures} entrará em quarentena.</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>

@@ -15,6 +15,7 @@ class CampaignCreate(BaseModel):
     scheduled_at: datetime | None = None
     lead_group: str | None = None
     allowed_instances: list[str] | None = None
+    use_windows: bool = False
 
 
 class CampaignUpdate(BaseModel):
@@ -26,6 +27,7 @@ class CampaignUpdate(BaseModel):
     scheduled_at: datetime | None = None
     lead_group: str | None = None
     allowed_instances: list[str] | None = None
+    use_windows: bool | None = None
 
 
 class CampaignResponse(BaseModel):
@@ -39,6 +41,7 @@ class CampaignResponse(BaseModel):
     status: CampaignStatus
     lead_group: str | None
     allowed_instances: list[str] | None
+    use_windows: bool
     scheduled_at: datetime | None
     started_at: datetime | None
     completed_at: datetime | None
