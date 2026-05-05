@@ -12,6 +12,7 @@ Fluxo por lead:
 """
 import asyncio
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from celery.utils.log import get_task_logger
@@ -128,7 +129,15 @@ async def _run_campaign_async(campaign_id: str) -> None:
         leads = (await db.execute(leads_q)).scalars().all()
         logger.info(f"Campanha {cid}: {len(leads)} leads pendentes para envio.")
 
-        for lead in leads:
+        # Fila mutável: leads transitórios são recolocados no final para retry.
+        pending: deque[Lead] = deque(leads)
+        # Contador de tentativas transitórias por lead (evita loop infinito).
+        transient_retries: dict[uuid.UUID, int] = {}
+        MAX_TRANSIENT_RETRIES = 3
+
+        while pending:
+            lead = pending.popleft()
+
             # Recarrega status da campanha (pode ter sido pausada/cancelada)
             await db.refresh(camp)
             if camp.status != CampaignStatus.running:
@@ -138,21 +147,15 @@ async def _run_campaign_async(campaign_id: str) -> None:
             # Aguarda horário comercial
             await antiban_engine.wait_for_business_hours()
 
-            # Janelas: se a campanha estiver configurada para distribuir
-            # envios pelo dia (manhã/tarde/noite), espera o próximo bloco
-            # ativo quando estamos numa pausa entre janelas.
             if camp.use_windows:
                 wait = await antiban_engine.wait_for_next_window()
                 if wait > 0:
                     logger.info(f"Campanha {cid}: aguardou {wait:.0f}s até a próxima janela.")
-                    # Após dormir, recarrega status (pode ter sido pausada)
                     await db.refresh(camp)
                     if camp.status != CampaignStatus.running:
                         return
 
-            # Verificação definitiva por lead: consulta o banco no momento do processamento
-            # para cobrir race conditions entre workers e retomadas de campanha.
-            # A subquery inicial é um pré-filtro; este SELECT é a garantia real.
+            # Verificação definitiva por lead (cobre race conditions e retomadas).
             already = (await db.execute(
                 select(Message.id)
                 .where(
@@ -179,9 +182,6 @@ async def _run_campaign_async(campaign_id: str) -> None:
                 use_windows=camp.use_windows,
             )
             if not instance:
-                # Quando use_windows=True e estamos dentro de uma janela mas
-                # todas instâncias bateram a quota do bloco, é melhor esperar
-                # a próxima janela do que pausar a campanha.
                 if camp.use_windows and antiban_engine.current_window_quota_pct() is not None:
                     wait = await antiban_engine.wait_for_next_window()
                     if wait > 0:
@@ -192,14 +192,6 @@ async def _run_campaign_async(campaign_id: str) -> None:
                         await db.refresh(camp)
                         if camp.status != CampaignStatus.running:
                             return
-                        # Volta ao topo do loop com a nova janela
-                        # Reusa pick_instance — usa um pequeno truque de continue
-                        # via try-except seria mais limpo, mas continue dentro
-                        # do for atual já basta:
-                        # (lead atual ainda não foi consumido)
-                        # Nota: o `for lead in leads` itera leads pré-carregados;
-                        # decrementar e re-pegar não é trivial. Em vez disso,
-                        # usamos pick_instance de novo agora.
                         instance = await pick_instance(
                             db,
                             lead_phone=lead.phone,
@@ -207,9 +199,6 @@ async def _run_campaign_async(campaign_id: str) -> None:
                             use_windows=camp.use_windows,
                         )
                 if not instance:
-                    # Sem instância disponível = limite diário atingido OU
-                    # todas com saúde abaixo do mínimo OU em quarentena.
-                    # Pausa a campanha — operador retoma quando resolver.
                     logger.warning(
                         f"Campanha {cid}: sem instâncias disponíveis "
                         "(limite diário atingido, saúde baixa ou em quarentena). "
@@ -246,30 +235,25 @@ async def _run_campaign_async(campaign_id: str) -> None:
                 is_audio_ptt = camp.media_url and camp.media_type and camp.media_type.value == "audio"
 
                 if is_audio_ptt:
-                    # Simula "gravando áudio…" (anti-ban para PTT)
                     recording_ms = int(antiban_engine._gaussian_delay() * 200)
                     await evolution_client.send_recording(
                         instance.evolution_instance_name, lead.phone, recording_ms
                     )
                     await asyncio.sleep(recording_ms / 1000)
                 else:
-                    # Simula digitando (anti-ban para texto/mídia)
                     typing_ms = int(antiban_engine._gaussian_delay() * 200)
                     await evolution_client.send_typing(
                         instance.evolution_instance_name, lead.phone, typing_ms
                     )
                     await asyncio.sleep(typing_ms / 1000)
 
-                # Envia texto de introdução se houver template + áudio
                 if content and is_audio_ptt:
                     await evolution_client.send_text(
                         instance.evolution_instance_name, lead.phone, content
                     )
                     await asyncio.sleep(1.5)
 
-                # Envia a mensagem principal
                 if is_audio_ptt:
-                    # Áudio como PTT (voz) — não aparece como "encaminhado"
                     await evolution_client.send_audio_ptt(
                         instance.evolution_instance_name,
                         lead.phone,
@@ -291,35 +275,68 @@ async def _run_campaign_async(campaign_id: str) -> None:
                 msg.status = MessageStatus.sent
                 msg.sent_at = datetime.now(timezone.utc)
                 camp.sent_count += 1
-                # Reseta o contador de falhas consecutivas a cada envio OK.
-                # É o sinal de que a instância continua saudável.
                 instance.consecutive_failures = 0
 
             except Exception as exc:
                 err_str = extract_error(exc)
-                logger.error(f"Erro ao enviar para {lead.phone} [{type(exc).__name__}]: {err_str}")
+                severity = antiban_engine.classify_error(err_str)
+                logger.error(f"Erro ao enviar para {lead.phone} [{type(exc).__name__}] severity={severity}: {err_str}")
+
+                if severity == "transient":
+                    # Remove o registro de envio e devolve o slot ao limite diário.
+                    # O lead é reinserido na fila para ser retentado com outra instância.
+                    await db.delete(msg)
+                    instance.daily_sent = max(0, instance.daily_sent - 1)
+                    instance.updated_at = datetime.now(timezone.utc)
+                    camp.updated_at = datetime.now(timezone.utc)
+                    await db.commit()
+
+                    retry_n = transient_retries.get(lead.id, 0) + 1
+                    transient_retries[lead.id] = retry_n
+                    if retry_n <= MAX_TRANSIENT_RETRIES:
+                        logger.warning(
+                            f"Transitório para {lead.phone} (tentativa {retry_n}/{MAX_TRANSIENT_RETRIES}), "
+                            f"reagendando: {err_str}"
+                        )
+                        pending.append(lead)
+                    else:
+                        logger.error(
+                            f"Lead {lead.phone}: esgotadas {MAX_TRANSIENT_RETRIES} tentativas "
+                            f"transitórias — registrando falha definitiva."
+                        )
+                        fail_msg = Message(
+                            campaign_id=cid,
+                            lead_id=lead.id,
+                            instance_id=instance.id,
+                            content=content,
+                            media_url=camp.media_url,
+                            status=MessageStatus.failed,
+                            failure_reason=f"[{MAX_TRANSIENT_RETRIES}x tentativas] {err_str}",
+                        )
+                        db.add(fail_msg)
+                        camp.failed_count += 1
+                        camp.updated_at = datetime.now(timezone.utc)
+                        instance.updated_at = datetime.now(timezone.utc)
+                        await db.commit()
+
+                    # Pula o commit/delay do fim do loop (já commitado acima)
+                    await antiban_engine.wait_between_messages()
+                    continue
+
+                # Falhas não-transitórias: marca como falida e penaliza instância
                 msg.status = MessageStatus.failed
                 msg.failure_reason = err_str
                 camp.failed_count += 1
 
-                # Classifica a falha para decidir penalidade e auto-pausa.
-                # 'no_whatsapp' = lead inválido; instância não tem culpa.
-                # 'severe'      = ban/sessão derrubada; penalidade alta.
-                # 'mild'        = erro genérico; penalidade pequena.
-                severity = antiban_engine.classify_error(err_str)
-
                 if severity == "no_whatsapp":
-                    # Não penaliza saúde nem incrementa falhas consecutivas.
-                    pass
+                    pass  # Número sem WhatsApp — instância não tem culpa
                 elif severity == "severe":
                     instance.health_score = max(0, instance.health_score - 15)
                     instance.consecutive_failures += 1
-                    # Erro grave isolado já é suficiente para tirar a instância
-                    # do circuito até intervenção humana.
                     instance.status = InstanceStatus.quarantine
                     logger.error(
-                        f"Instância {instance.evolution_instance_name} colocada em "
-                        f"QUARENTENA após erro grave: {err_str[:120]}"
+                        f"Instância {instance.evolution_instance_name} em QUARENTENA "
+                        f"após erro grave: {err_str[:120]}"
                     )
                 else:  # mild
                     instance.health_score = max(0, instance.health_score - 2)

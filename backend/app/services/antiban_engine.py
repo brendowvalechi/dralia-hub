@@ -179,6 +179,21 @@ _NO_WHATSAPP_TOKENS = (
     "number does not exist",
     "is not on whatsapp",
 )
+# Erros transitórios: API sobrecarregada, timeout de rede, servidor temporariamente
+# indisponível. O lead deve ser retentado — não é falha permanente nem culpa do número.
+_TRANSIENT_TOKENS = (
+    "readtimeout",
+    "connecttimeout",
+    "connecterror",
+    "pooltimeout",
+    "writetimeout",
+    "remotedisconnected",
+    "http 429",   # Too Many Requests
+    "http 500",   # Internal Server Error
+    "http 502",   # Bad Gateway
+    "http 503",   # Service Unavailable
+    "http 504",   # Gateway Timeout
+)
 _SEVERE_TOKENS = (
     "401",
     "stream errored",
@@ -194,8 +209,9 @@ _SEVERE_TOKENS = (
 
 def classify_error(error_message: str) -> str:
     """
-    Classifica o erro em uma de três categorias:
+    Classifica o erro em uma de quatro categorias:
       - "no_whatsapp": número do lead não tem WhatsApp (não penaliza instância)
+      - "transient":   timeout / API sobrecarregada — retentar automaticamente
       - "severe":      ban, sessão derrubada, conexão fechada (penalidade alta)
       - "mild":        outros erros (penalidade pequena)
     """
@@ -204,6 +220,8 @@ def classify_error(error_message: str) -> str:
     e = error_message.lower()
     if any(t in e for t in _NO_WHATSAPP_TOKENS):
         return "no_whatsapp"
+    if any(t in e for t in _TRANSIENT_TOKENS):
+        return "transient"
     if any(t in e for t in _SEVERE_TOKENS):
         return "severe"
     return "mild"
