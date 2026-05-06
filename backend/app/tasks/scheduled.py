@@ -84,36 +84,69 @@ def advance_warmup() -> None:
 # update_health_scores — recalcula health_score com base nos envios do dia
 # ─────────────────────────────────────────────────────────────────────────────
 async def _update_health_scores_async() -> None:
+    from app.services.antiban_engine import BRT
+
     async with _worker_session()() as db:
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        # today_start em BRT: garante que mensagens enviadas hoje (horário brasileiro)
+        # sejam contadas mesmo quando a task roda às 23:55 BRT = 02:55 UTC+1.
+        now_brt = datetime.now(BRT)
+        today_start = now_brt.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
         result = await db.execute(select(Instance))
         instances = result.scalars().all()
 
         for inst in instances:
-            # Conta mensagens do dia por status
-            def count_status(s: MessageStatus):
-                return select(func.count(Message.id)).where(
+            sent = (await db.execute(
+                select(func.count(Message.id)).where(
                     Message.instance_id == inst.id,
-                    Message.status == s,
+                    Message.status == MessageStatus.sent,
                     Message.sent_at >= today_start,
                 )
-
-            sent = (await db.execute(count_status(MessageStatus.sent))).scalar_one()
-            delivered = (await db.execute(count_status(MessageStatus.delivered))).scalar_one()
-            read = (await db.execute(count_status(MessageStatus.read))).scalar_one()
-            failed = (await db.execute(count_status(MessageStatus.failed))).scalar_one()
+            )).scalar_one()
+            delivered = (await db.execute(
+                select(func.count(Message.id)).where(
+                    Message.instance_id == inst.id,
+                    Message.status == MessageStatus.delivered,
+                    Message.sent_at >= today_start,
+                )
+            )).scalar_one()
+            read = (await db.execute(
+                select(func.count(Message.id)).where(
+                    Message.instance_id == inst.id,
+                    Message.status == MessageStatus.read,
+                    Message.sent_at >= today_start,
+                )
+            )).scalar_one()
+            # Mensagens com falha não têm sent_at — usa created_at
+            failed = (await db.execute(
+                select(func.count(Message.id)).where(
+                    Message.instance_id == inst.id,
+                    Message.status == MessageStatus.failed,
+                    Message.created_at >= today_start,
+                )
+            )).scalar_one()
 
             total = sent + delivered + read + failed
+
             if total == 0:
+                # Sem atividade hoje: recuperação passiva para instâncias conectadas.
+                # +2 por dia de descanso, máximo 90 (nunca chega a 100 só descansando).
+                if inst.status == InstanceStatus.connected and inst.health_score < 90:
+                    inst.health_score = min(inst.health_score + 2, 90)
+                    inst.updated_at = datetime.now(timezone.utc)
+                    logger.info(
+                        f"Instância {inst.display_name}: descanso → health_score={inst.health_score} (+2)"
+                    )
                 continue
 
             delta = warmup_manager.calculate_health_delta(
                 sent=total, delivered=delivered + read, failed=failed, read=read
             )
             inst.health_score = warmup_manager.clamp_health(inst.health_score + delta)
+            inst.updated_at = datetime.now(timezone.utc)
             logger.info(
-                f"Instância {inst.display_name}: health_score={inst.health_score} (delta={delta:+})"
+                f"Instância {inst.display_name}: health_score={inst.health_score} (delta={delta:+}, "
+                f"enviadas={sent}, entregues={delivered+read}, falhas={failed})"
             )
 
         await db.commit()
