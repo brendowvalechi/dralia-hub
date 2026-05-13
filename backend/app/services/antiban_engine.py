@@ -179,20 +179,16 @@ _NO_WHATSAPP_TOKENS = (
     "number does not exist",
     "is not on whatsapp",
 )
-# Erros transitórios: API sobrecarregada, timeout de rede, servidor temporariamente
-# indisponível. O lead deve ser retentado — não é falha permanente nem culpa do número.
+# Erros onde a mensagem DEFINITIVAMENTE não foi enviada — seguro retentar.
+# Apenas falhas de conexão pura: o request nunca chegou ao servidor da Evolution API.
+# ReadTimeout É EXCLUÍDO propositalmente: a conexão foi estabelecida e o request
+# enviado, então a Evolution API pode ter processado e enviado ao WhatsApp antes
+# do timeout. Retentar causaria duplicata confirmada em produção (2026-05-13).
 _TRANSIENT_TOKENS = (
-    "readtimeout",
-    "connecttimeout",
-    "connecterror",
-    "pooltimeout",
-    "writetimeout",
-    "remotedisconnected",
-    "http 429",   # Too Many Requests
-    "http 500",   # Internal Server Error
-    "http 502",   # Bad Gateway
-    "http 503",   # Service Unavailable
-    "http 504",   # Gateway Timeout
+    "connecttimeout",    # Timeout ao estabelecer TCP — request nunca enviado
+    "connecterror",      # Conexão recusada/falhou — request nunca enviado
+    "pooltimeout",       # Pool de conexões esgotado — request nunca enviado
+    "remotedisconnected", # Servidor fechou antes de receber — request nunca enviado
 )
 _SEVERE_TOKENS = (
     "401",
@@ -210,10 +206,10 @@ _SEVERE_TOKENS = (
 def classify_error(error_message: str) -> str:
     """
     Classifica o erro em uma de quatro categorias:
-      - "no_whatsapp": número do lead não tem WhatsApp (não penaliza instância)
-      - "transient":   timeout / API sobrecarregada — retentar automaticamente
-      - "severe":      ban, sessão derrubada, conexão fechada (penalidade alta)
-      - "mild":        outros erros (penalidade pequena)
+      - "no_whatsapp": número sem WhatsApp (não penaliza instância, exclui do dedup)
+      - "transient":   falha de conexão pura — seguro retentar (request nunca enviado)
+      - "severe":      ban/sessão derrubada — penalidade alta + quarentena
+      - "mild":        outros erros incluindo ReadTimeout — falha permanente, sem retry
     """
     if not error_message:
         return "mild"

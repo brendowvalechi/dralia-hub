@@ -29,7 +29,8 @@ from app.services import antiban_engine, evolution_client, spintax_engine
 from app.services.evolution_client import extract_error
 from app.services.instance_router import pick_instance
 
-from sqlalchemy import select, text, update, exists
+from sqlalchemy import or_, select, text, update, exists
+from app.services.antiban_engine import _NO_WHATSAPP_TOKENS
 
 logger = get_task_logger(__name__)
 
@@ -98,9 +99,7 @@ async def _run_campaign_async(campaign_id: str) -> None:
             logger.warning(f"Campanha {cid}: {stale_fixed} mensagens travadas em 'sending' marcadas como falha.")
         await db.commit()
 
-        # Subquery de exclusão inicial: leads que já têm mensagem processada com sucesso
-        # ou ainda em andamento. Funciona como pré-filtro rápido; a verificação definitiva
-        # ocorre por lead dentro do loop (ver adiante).
+        # Subquery de exclusão: leads já enviados com sucesso ou em andamento.
         already_sent_subq = (
             select(Message.lead_id)
             .where(
@@ -115,11 +114,28 @@ async def _run_campaign_async(campaign_id: str) -> None:
             .scalar_subquery()
         )
 
+        # Subquery de exclusão permanente: leads que não têm WhatsApp.
+        # Esses leads falharam com "exists:false" ou equivalente e nunca vão
+        # ter sucesso — excluí-los evita retentativas infinitas a cada retomada.
+        no_whatsapp_subq = (
+            select(Message.lead_id)
+            .where(
+                Message.campaign_id == cid,
+                Message.status == MessageStatus.failed,
+                or_(*[
+                    Message.failure_reason.ilike(f"%{token}%")
+                    for token in _NO_WHATSAPP_TOKENS
+                ]),
+            )
+            .scalar_subquery()
+        )
+
         leads_q = (
             select(Lead)
             .where(
                 Lead.status == LeadStatus.active,
                 Lead.id.not_in(already_sent_subq),
+                Lead.id.not_in(no_whatsapp_subq),
             )
         )
         if camp.lead_group:
@@ -156,7 +172,8 @@ async def _run_campaign_async(campaign_id: str) -> None:
                         return
 
             # Verificação definitiva por lead (cobre race conditions e retomadas).
-            already = (await db.execute(
+            # Também exclui definitivamente leads sem WhatsApp para não retentar.
+            already_sent = (await db.execute(
                 select(Message.id)
                 .where(
                     Message.campaign_id == cid,
@@ -170,8 +187,25 @@ async def _run_campaign_async(campaign_id: str) -> None:
                 )
                 .limit(1)
             )).scalar_one_or_none()
-            if already:
+            if already_sent:
                 logger.warning(f"Lead {lead.id} ({lead.phone}) já processado — pulando duplicata.")
+                continue
+
+            already_no_whatsapp = (await db.execute(
+                select(Message.id)
+                .where(
+                    Message.campaign_id == cid,
+                    Message.lead_id == lead.id,
+                    Message.status == MessageStatus.failed,
+                    or_(*[
+                        Message.failure_reason.ilike(f"%{token}%")
+                        for token in _NO_WHATSAPP_TOKENS
+                    ]),
+                )
+                .limit(1)
+            )).scalar_one_or_none()
+            if already_no_whatsapp:
+                logger.info(f"Lead {lead.phone} sem WhatsApp confirmado — ignorando.")
                 continue
 
             # Escolhe instância (round-robin ponderado por health_score + afinidade DDD)
