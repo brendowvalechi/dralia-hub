@@ -4,11 +4,13 @@ Instance Router — seleção inteligente de instâncias para disparo.
 Estratégia: round-robin ponderado por health_score com afinidade de DDD.
 - Instâncias com maior health_score têm mais chance de ser escolhidas.
 - Se o número do lead tiver DDD correspondente ao número da instância, prioriza.
-- Respeita daily_limit e status connected.
+- Respeita daily_limit (com redutor por saúde) e status connected.
+- excluded_ids: instâncias temporariamente excluídas por rotação forçada.
 """
 from __future__ import annotations
 
 import random
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,22 +19,38 @@ from app.models.instance import Instance, InstanceStatus
 from app.services import antiban_engine
 
 
+def _effective_limit(inst: Instance) -> int:
+    """Limite diário efetivo com redutor por saúde.
+
+    - saúde ≥ 85: 100% do daily_limit
+    - saúde 75–84: 70% do daily_limit
+    - saúde < 75:  50% do daily_limit (raramente atingido pois MIN_HEALTH_SCORE=75)
+    """
+    h = inst.health_score
+    if h >= 85:
+        factor = 1.0
+    elif h >= 75:
+        factor = 0.7
+    else:
+        factor = 0.5
+    return max(1, int(inst.daily_limit * factor))
+
+
 async def pick_instance(
     db: AsyncSession,
     lead_phone: str | None = None,
     allowed_names: list[str] | None = None,
     use_windows: bool = False,
+    excluded_ids: list[uuid.UUID] | None = None,
 ) -> Instance | None:
     """
     Escolhe a melhor instância disponível.
 
-    - Filtra: status=connected, daily_sent < daily_limit
+    - Filtra: status=connected, daily_sent < _effective_limit(inst)
     - Bloqueia instâncias com saúde abaixo de antiban_engine.MIN_HEALTH_SCORE
-      (valor atual = 60). Decisão tomada após bans com saúde de 52% — não
-      vale o risco quando há outras instâncias saudáveis disponíveis.
     - Se allowed_names informado, restringe a esse subconjunto de instâncias
-    - Quando use_windows=True, filtra também por quota da janela atual:
-      uma instância só envia se daily_sent < daily_limit * quota_pct_atual
+    - excluded_ids: instâncias a ignorar temporariamente (rotação forçada)
+    - Quando use_windows=True, filtra também por quota da janela atual
     - Ordena: health_score desc
     - Aplica seleção ponderada (health_score como peso)
     - Bônus de afinidade DDD se lead_phone informado
@@ -41,24 +59,26 @@ async def pick_instance(
         select(Instance)
         .where(
             Instance.status == InstanceStatus.connected,
-            Instance.daily_sent < Instance.daily_limit,
             Instance.health_score >= antiban_engine.MIN_HEALTH_SCORE,
         )
     )
     if allowed_names:
         q = q.where(Instance.evolution_instance_name.in_(allowed_names))
+    if excluded_ids:
+        q = q.where(Instance.id.not_in(excluded_ids))
 
     result = await db.execute(q.order_by(Instance.health_score.desc()).limit(10))
     candidates = result.scalars().all()
 
-    # Filtro de janelas: aplicado em Python por simplicidade — daily_limit varia
-    # por instância, e o cálculo (daily_limit * quota_pct) seria verboso em SQL.
+    # Aplica limite efetivo por saúde (filtro em Python — depende de _effective_limit)
+    candidates = [c for c in candidates if c.daily_sent < _effective_limit(c)]
+
+    # Filtro de janelas: quota proporcional ao limite efetivo
     if use_windows and candidates:
         quota_pct = antiban_engine.current_window_quota_pct()
         if quota_pct is None:
-            # Fora de janela ativa (intervalo entre blocos ou fora do horário)
             return None
-        candidates = [c for c in candidates if c.daily_sent < int(c.daily_limit * quota_pct)]
+        candidates = [c for c in candidates if c.daily_sent < int(_effective_limit(c) * quota_pct)]
 
     if not candidates:
         return None

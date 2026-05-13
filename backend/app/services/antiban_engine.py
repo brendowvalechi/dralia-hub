@@ -3,37 +3,43 @@ Anti-ban Engine — controla delays, horário comercial, janelas de envio e
 thresholds de saúde.
 
 Regras gerais:
-- Delay base gaussiano entre MIN_DELAY e MAX_DELAY segundos (com jitter)
+- Delay gaussiano adaptativo: quanto menor a saúde, mais lento o envio
 - Só envia em horário comercial BRT (UTC-3): 08:00–20:00
-- Respeita daily_limit por instância
+- Respeita daily_limit (com redutor por saúde) por instância
 - Bloqueia envios para instâncias com health_score < MIN_HEALTH_SCORE
 - Quando a campanha usa janelas, distribui o disparo em 3 blocos do dia
-  (manhã/tarde/noite) com pausas de almoço e jantar
+- Circuit breaker de sessão: pausa automática se taxa de falha recente > 30%
 """
 import asyncio
 import random
 from datetime import datetime, timezone, timedelta
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parâmetros de delay (subimos de 15-90 para 30-180s para reduzir risco de ban)
+# Jitter do delay gaussiano
 # ─────────────────────────────────────────────────────────────────────────────
-MIN_DELAY = 30       # segundos
-MAX_DELAY = 180      # segundos
-JITTER_PCT = 0.30    # ±30 %
+JITTER_PCT = 0.25    # ±25 %
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Threshold mínimo de saúde para enviar mensagens.
-# Instâncias com saúde abaixo são bloqueadas pelo instance_router até se
-# recuperarem (saúde só sobe via update_health_scores no fim do dia, com base
-# em delivery rate). Valor escolhido junto ao operador: 60 (ontem ban com 52%).
+# Elevado de 60 → 75 após bans ocorrerem com saúde entre 60-70:
+# a margem de 60 chegava tarde demais para evitar ação do WhatsApp.
 # ─────────────────────────────────────────────────────────────────────────────
-MIN_HEALTH_SCORE = 60
+MIN_HEALTH_SCORE = 75
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Falhas consecutivas — número que bloqueia a instância automaticamente.
 # Erros classificados como "no_whatsapp" não contam (problema do lead).
 # ─────────────────────────────────────────────────────────────────────────────
 MAX_CONSECUTIVE_FAILURES = 5
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Circuit breaker de sessão: se X% das últimas N mensagens falharem
+# (excluindo no_whatsapp), o worker pausa automaticamente por SESSION_PAUSE_S.
+# Detecta pressão do WhatsApp em tempo real, antes da saúde cair.
+# ─────────────────────────────────────────────────────────────────────────────
+SESSION_WINDOW   = 10         # janela de avaliação (mensagens)
+SESSION_FAIL_PCT = 0.30       # 30% de falha aciona pausa
+SESSION_PAUSE_S  = 15 * 60    # 15 minutos
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Horário comercial e janelas
@@ -52,11 +58,22 @@ SEND_WINDOWS: list[tuple[float, float, float]] = [
 ]
 
 
-def _gaussian_delay() -> float:
-    """Delay gaussiano entre MIN e MAX com jitter."""
-    mu = (MIN_DELAY + MAX_DELAY) / 2
-    sigma = (MAX_DELAY - MIN_DELAY) / 6
-    base = max(MIN_DELAY, min(MAX_DELAY, random.gauss(mu, sigma)))
+def _gaussian_delay(health_score: int = 100) -> float:
+    """Delay gaussiano adaptativo: quanto menor a saúde, mais lento o envio.
+
+    - saúde ≥ 85: 20–80 s   (saudável, ritmo normal)
+    - saúde 75–84: 40–150 s (cautela moderada)
+    - saúde < 75:  80–240 s (muito cauteloso; normalmente bloqueado pelo MIN_HEALTH_SCORE)
+    """
+    if health_score >= 85:
+        min_d, max_d = 20, 80
+    elif health_score >= 75:
+        min_d, max_d = 40, 150
+    else:
+        min_d, max_d = 80, 240
+    mu = (min_d + max_d) / 2
+    sigma = (max_d - min_d) / 6
+    base = max(min_d, min(max_d, random.gauss(mu, sigma)))
     jitter = base * JITTER_PCT * random.uniform(-1, 1)
     return max(1.0, base + jitter)
 
@@ -138,9 +155,9 @@ def seconds_until_next_window() -> float:
     return (target - now).total_seconds()
 
 
-async def wait_between_messages() -> None:
-    """Aguarda o delay anti-ban entre envios."""
-    delay = _gaussian_delay()
+async def wait_between_messages(health_score: int = 100) -> None:
+    """Aguarda o delay anti-ban entre envios (adaptativo por saúde)."""
+    delay = _gaussian_delay(health_score)
     await asyncio.sleep(delay)
 
 

@@ -16,11 +16,11 @@ const STATUS_COLOR: Record<string, string> = {
 
 // Mantém alinhado com backend antiban_engine.MIN_HEALTH_SCORE.
 // Abaixo desse valor o instance_router NÃO usa a instância em campanhas.
-const MIN_HEALTH_TO_SEND = 60
+const MIN_HEALTH_TO_SEND = 75
 
 function HealthBar({ score }: { score: number }) {
-  // >=70 verde · 60-69 amarelo (no limite) · <60 vermelho (BLOQUEADO de envios)
-  const color = score >= 70 ? 'bg-green-500' : score >= MIN_HEALTH_TO_SEND ? 'bg-yellow-500' : 'bg-red-500'
+  // >=85 verde (saudável) · 75-84 amarelo (cautela) · <75 vermelho (BLOQUEADO de envios)
+  const color = score >= 85 ? 'bg-green-500' : score >= MIN_HEALTH_TO_SEND ? 'bg-yellow-500' : 'bg-red-500'
   const blocked = score < MIN_HEALTH_TO_SEND
   return (
     <div className="flex items-center gap-2">
