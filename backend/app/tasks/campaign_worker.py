@@ -155,12 +155,6 @@ async def _run_campaign_async(campaign_id: str) -> None:
         # True = enviado com sucesso, False = falha (exceto no_whatsapp).
         session_results: list[bool] = []
 
-        # Rotação forçada de instâncias: após N envios consecutivos na mesma
-        # instância, exclui-a temporariamente para forçar troca.
-        MAX_CONSECUTIVE_PER_INSTANCE = 15
-        consecutive_per_instance: dict[uuid.UUID, int] = {}
-        rotation_excluded: set[uuid.UUID] = set()
-
         while pending:
             lead = pending.popleft()
 
@@ -235,28 +229,13 @@ async def _run_campaign_async(campaign_id: str) -> None:
                     if camp.status != CampaignStatus.running:
                         return
 
-            # Rotação forçada: se todas instâncias ativas estão na lista de exclusão,
-            # limpa o exclusion set para evitar deadlock.
-            excluded_list = list(rotation_excluded) if rotation_excluded else None
-
             # Escolhe instância (round-robin ponderado por health_score + afinidade DDD)
             instance = await pick_instance(
                 db,
                 lead_phone=lead.phone,
                 allowed_names=camp.allowed_instances or None,
                 use_windows=camp.use_windows,
-                excluded_ids=excluded_list,
             )
-            # Se sem instância com exclusão, tenta sem excluir (todas esgotaram rotação)
-            if not instance and rotation_excluded:
-                rotation_excluded.clear()
-                consecutive_per_instance.clear()
-                instance = await pick_instance(
-                    db,
-                    lead_phone=lead.phone,
-                    allowed_names=camp.allowed_instances or None,
-                    use_windows=camp.use_windows,
-                )
             if not instance:
                 if camp.use_windows and antiban_engine.current_window_quota_pct() is not None:
                     wait = await antiban_engine.wait_for_next_window()
@@ -353,16 +332,8 @@ async def _run_campaign_async(campaign_id: str) -> None:
                 camp.sent_count += 1
                 instance.consecutive_failures = 0
 
-                # Sucesso: atualiza rastreamento de sessão e rotação
+                # Sucesso: registra para o circuit breaker de sessão
                 session_results.append(True)
-                consecutive_per_instance[instance.id] = consecutive_per_instance.get(instance.id, 0) + 1
-                if consecutive_per_instance[instance.id] >= MAX_CONSECUTIVE_PER_INSTANCE:
-                    rotation_excluded.add(instance.id)
-                    consecutive_per_instance[instance.id] = 0
-                    logger.info(
-                        f"Instância {instance.evolution_instance_name}: {MAX_CONSECUTIVE_PER_INSTANCE} envios "
-                        f"consecutivos — excluída temporariamente para rotação."
-                    )
 
             except Exception as exc:
                 err_str = extract_error(exc)

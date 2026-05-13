@@ -5,12 +5,10 @@ Estratégia: round-robin ponderado por health_score com afinidade de DDD.
 - Instâncias com maior health_score têm mais chance de ser escolhidas.
 - Se o número do lead tiver DDD correspondente ao número da instância, prioriza.
 - Respeita daily_limit (com redutor por saúde) e status connected.
-- excluded_ids: instâncias temporariamente excluídas por rotação forçada.
 """
 from __future__ import annotations
 
 import random
-import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,7 +39,6 @@ async def pick_instance(
     lead_phone: str | None = None,
     allowed_names: list[str] | None = None,
     use_windows: bool = False,
-    excluded_ids: list[uuid.UUID] | None = None,
 ) -> Instance | None:
     """
     Escolhe a melhor instância disponível.
@@ -49,7 +46,6 @@ async def pick_instance(
     - Filtra: status=connected, daily_sent < _effective_limit(inst)
     - Bloqueia instâncias com saúde abaixo de antiban_engine.MIN_HEALTH_SCORE
     - Se allowed_names informado, restringe a esse subconjunto de instâncias
-    - excluded_ids: instâncias a ignorar temporariamente (rotação forçada)
     - Quando use_windows=True, filtra também por quota da janela atual
     - Ordena: health_score desc
     - Aplica seleção ponderada (health_score como peso)
@@ -64,8 +60,6 @@ async def pick_instance(
     )
     if allowed_names:
         q = q.where(Instance.evolution_instance_name.in_(allowed_names))
-    if excluded_ids:
-        q = q.where(Instance.id.not_in(excluded_ids))
 
     result = await db.execute(q.order_by(Instance.health_score.desc()).limit(10))
     candidates = result.scalars().all()
