@@ -51,35 +51,48 @@ def calculate_health_delta(
     delivered: int,
     failed: int,
     read: int,
-) -> int:
+    consecutive_good_days: int = 0,
+) -> tuple[int, int]:
     """
-    Calcula o delta de health_score baseado nos resultados do dia.
+    Calcula o delta de health_score e o novo consecutive_good_days.
+
+    Retorna (delta, novo_consecutive_good_days).
 
     Regras:
-    - Taxa de entrega < 60%: -10
-    - Taxa de entrega 60-80%: 0
-    - Taxa de entrega > 80%: +2
+    - Taxa de entrega < 60%: -10  → reseta dias consecutivos bons
+    - Taxa de entrega 60-80%: 0   → reseta dias consecutivos bons
+    - Taxa de entrega > 80%: +2   → incrementa dias consecutivos bons
     - Taxa de leitura > 20%: +3 bônus
     - Falhas > 10 em um dia: -5
+    - A cada dia com entrega >80% acima do 3º consecutivo: +1 bônus extra
     """
     if sent == 0:
-        return 0
+        return 0, consecutive_good_days
 
     delivery_rate = delivered / sent
     delta = 0
+    new_consecutive = consecutive_good_days
 
     if delivery_rate < 0.60:
         delta -= 10
+        new_consecutive = 0
     elif delivery_rate > 0.80:
         delta += 2
+        new_consecutive = consecutive_good_days + 1
+        # Bônus por consistência: a partir do 3º dia bom consecutivo, +1 extra por dia
+        if new_consecutive >= 3:
+            delta += 1
+    else:
+        # Entrega 60-80%: neutro, reseta streak
+        new_consecutive = 0
 
-    if sent > 0 and read / sent > 0.20:
+    if read / sent > 0.20:
         delta += 3
 
     if failed > 10:
         delta -= 5
 
-    return delta
+    return delta, new_consecutive
 
 
 def clamp_health(score: int) -> int:

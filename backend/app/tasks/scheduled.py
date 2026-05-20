@@ -130,23 +130,28 @@ async def _update_health_scores_async() -> None:
 
             if total == 0:
                 # Sem atividade hoje: recuperação passiva para instâncias conectadas.
-                # +2 por dia de descanso, máximo 90 (nunca chega a 100 só descansando).
+                # +3 por dia de descanso, máximo 90 (nunca chega a 100 só descansando).
                 if inst.status == InstanceStatus.connected and inst.health_score < 90:
-                    inst.health_score = min(inst.health_score + 2, 90)
+                    inst.health_score = min(inst.health_score + 3, 90)
                     inst.updated_at = datetime.now(timezone.utc)
                     logger.info(
-                        f"Instância {inst.display_name}: descanso → health_score={inst.health_score} (+2)"
+                        f"Instância {inst.display_name}: descanso → health_score={inst.health_score} (+3)"
                     )
                 continue
 
-            delta = warmup_manager.calculate_health_delta(
-                sent=total, delivered=delivered + read, failed=failed, read=read
+            delta, new_consecutive = warmup_manager.calculate_health_delta(
+                sent=total,
+                delivered=delivered + read,
+                failed=failed,
+                read=read,
+                consecutive_good_days=inst.consecutive_good_days,
             )
             inst.health_score = warmup_manager.clamp_health(inst.health_score + delta)
+            inst.consecutive_good_days = new_consecutive
             inst.updated_at = datetime.now(timezone.utc)
             logger.info(
                 f"Instância {inst.display_name}: health_score={inst.health_score} (delta={delta:+}, "
-                f"enviadas={sent}, entregues={delivered+read}, falhas={failed})"
+                f"dias_bons={new_consecutive}, enviadas={sent}, entregues={delivered+read}, falhas={failed})"
             )
 
         await db.commit()

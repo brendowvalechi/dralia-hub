@@ -42,6 +42,8 @@ class Instance(Base):
     # Falhas consecutivas (zera a cada envio bem-sucedido). Atinge MAX_CONSECUTIVE_FAILURES
     # → instância vai pra quarentena automaticamente.
     consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Dias consecutivos com taxa de entrega >80%. Acumula bônus de +1/dia após 3 dias bons.
+    consecutive_good_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_connected_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
